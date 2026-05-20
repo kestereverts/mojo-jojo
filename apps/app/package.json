@@ -1,0 +1,15 @@
+{
+  "name": "@mojo-jojo/app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "module": "index.ts",
+  "main": "index.ts",
+  "scripts": {
+    "start": "bun run index.ts",
+    "dev": "bun --watch run index.ts",
+    "build": "bun build index.ts --outdir dist --target bun",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  }
+}
