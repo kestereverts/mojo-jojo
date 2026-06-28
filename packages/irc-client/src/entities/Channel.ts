@@ -6,7 +6,9 @@ import type { ModeChange } from "../protocol/modeParser.ts";
 import type {
   AccountEvent,
   ActionEvent,
+  AwayEvent,
   ChannelEvent,
+  ChghostEvent,
   JoinEvent,
   KickEvent,
   ModeEvent,
@@ -16,6 +18,7 @@ import type {
   PartEvent,
   PrivmsgEvent,
   QuitEvent,
+  SetnameEvent,
   TopicEvent,
 } from "../events/types.ts";
 
@@ -104,6 +107,18 @@ export class Channel extends ReactiveEntity<ChannelEvent> {
   /** Account (login/logout) changes for members of this channel (`account-notify`). */
   get accountChanges$(): Observable<AccountEvent> {
     return this.stream("account");
+  }
+  /** Away/return changes for members of this channel (`away-notify`). */
+  get awayChanges$(): Observable<AwayEvent> {
+    return this.stream("away");
+  }
+  /** Username/host changes for members of this channel (`chghost`). */
+  get chghost$(): Observable<ChghostEvent> {
+    return this.stream("chghost");
+  }
+  /** Real-name changes for members of this channel (`setname`). */
+  get setname$(): Observable<SetnameEvent> {
+    return this.stream("setname");
   }
 
   /** @internal Set the topic and its provenance. */

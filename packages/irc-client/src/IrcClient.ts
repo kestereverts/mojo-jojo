@@ -118,6 +118,8 @@ export class IrcClient {
   #nick: string;
   #state: ClientState = "idle";
   #attemptCount = 0;
+  /** Monotonic counter for `labeled-response` correlation tags (M6). */
+  #labelCounter = 0;
 
   constructor(options: IrcClientOptions, internals: IrcClientInternals = {}) {
     this.#options = resolveOptions(options);
@@ -410,6 +412,121 @@ export class IrcClient {
     this.send(rawCommand(commandName, ...params));
   }
 
+  /**
+   * Send a command correlated via `labeled-response` and resolve with the
+   * server's reply for it: `[]` for an `ACK` (a command that normally produces no
+   * output), `[message]` for a single labeled reply, or the inner messages of a
+   * labeled `BATCH` (nested batches included). Rejects on timeout (default 30s),
+   * or if the connection drops / {@link quit} is called before the reply. The
+   * `label` tag is added here — the caller supplies a plain {@link Message}.
+   *
+   * Requires the `labeled-response` capability; rejects immediately otherwise.
+   */
+  sendLabeled(message: Message, options: { timeoutMs?: number } = {}): Promise<Message[]> {
+    if (!this.enabledCaps.has("labeled-response")) {
+      return Promise.reject(
+        new Error("sendLabeled: the 'labeled-response' capability is not enabled"),
+      );
+    }
+    if (this.#queue === null) {
+      return Promise.reject(new Error("sendLabeled: not connected"));
+    }
+    const label = `ml${++this.#labelCounter}`;
+    const timeoutMs = options.timeoutMs ?? 30000;
+
+    return new Promise<Message[]>((resolve, reject) => {
+      const collected: Message[] = [];
+      const batchRefs = new Set<string>(); // the labeled batch + any nested ones
+      let topRef: string | null = null;
+      let settled = false;
+
+      const sub = new Subscription();
+      const finish = (run: () => void): void => {
+        if (settled) return;
+        settled = true;
+        sub.unsubscribe();
+        run();
+      };
+
+      const timer = setTimeout(
+        () => finish(() => reject(new Error(`sendLabeled: timed out after ${timeoutMs}ms`))),
+        timeoutMs,
+      );
+      sub.add(() => clearTimeout(timer));
+
+      sub.add(
+        this.#lifecycle
+          .pipe(
+            filter((e) => e.type === "disconnected"),
+            take(1),
+            takeUntil(this.#teardown),
+          )
+          .subscribe((e) => {
+            finish(() =>
+              reject(
+                new Error(
+                  e.local
+                    ? "sendLabeled: connection closed before response"
+                    : "sendLabeled: connection dropped before response",
+                ),
+              ),
+            );
+          }),
+      );
+
+      sub.add(
+        this.#messages.pipe(takeUntil(this.#teardown)).subscribe({
+          next: (m) => {
+            const token = m.params[0];
+            if (topRef === null) {
+              // Awaiting the one labeled reply: an ACK, a batch open, or a single
+              // message. Correlation is by the `label` tag on this outer message.
+              if (m.tags["label"] !== label) return;
+              if (m.command === "ACK") {
+                finish(() => resolve([]));
+                return;
+              }
+              if (m.command === "BATCH" && token !== undefined && token[0] === "+") {
+                topRef = token.slice(1);
+                batchRefs.add(topRef);
+                return;
+              }
+              finish(() => resolve([m]));
+              return;
+            }
+            // Inside the labeled batch: collect by `batch` tag until it closes.
+            if (m.command === "BATCH" && token === `-${topRef}`) {
+              finish(() => resolve(collected));
+              return;
+            }
+            const ref = m.tags["batch"];
+            if (ref === undefined || !batchRefs.has(ref)) return;
+            collected.push(m);
+            // A nested batch: track its ref so its content is collected too.
+            if (m.command === "BATCH" && token !== undefined && token[0] === "+") {
+              batchRefs.add(token.slice(1));
+            }
+          },
+          error: () =>
+            finish(() => reject(new Error("sendLabeled: connection error before response"))),
+          complete: () =>
+            finish(() => reject(new Error("sendLabeled: connection closed before response"))),
+        }),
+      );
+
+      this.send({ ...message, tags: { ...message.tags, label } });
+    });
+  }
+
+  /**
+   * Request message history via the `chathistory` extension, e.g.
+   * `chatHistory("LATEST", "#chan", "*", "50")`. Built on {@link sendLabeled}, so
+   * it resolves with the history batch's messages and requires `labeled-response`.
+   */
+  chatHistory(subcommand: string, ...args: string[]): Promise<Message[]> {
+    return this.sendLabeled(rawCommand("CHATHISTORY", subcommand, ...args));
+  }
+
   #emit(event: LifecycleEvent): void {
     this.#lifecycle.next(event);
   }
@@ -449,10 +566,14 @@ export class IrcClient {
       let queue: OutboundQueue | null = null;
 
       // Fresh state per attempt: a reconnect starts from a clean slate (the
-      // server resends 005/NAMES/etc. on re-registration).
+      // server resends 005/NAMES/etc. on re-registration). Clear the caps too so
+      // `enabledCaps` never reports the *previous* connection's caps during the
+      // reconnect window (before the new CAP negotiation completes) — otherwise
+      // e.g. `sendLabeled`'s cap guard could pass against stale state.
       const store = new StateStore(this.#options.nick);
       const dispatcher = new Dispatcher(store);
       this.#store = store;
+      this.#capabilities = null;
 
       const failAttempt = (err: unknown): void => {
         if (settled) return;
@@ -540,6 +661,10 @@ export class IrcClient {
         // attempt may already have replaced them).
         if (this.#queue === queue) this.#queue = null;
         if (this.#transport === transport) this.#transport = null;
+        // Clear the negotiated caps on teardown too (drop/reconnect/quit), not
+        // just at the next attempt's start — otherwise `enabledCaps` reports the
+        // dead connection's caps during the backoff gap before the retry fires.
+        if (this.#store === store) this.#capabilities = null;
         transport.close();
       };
     });

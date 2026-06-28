@@ -2,7 +2,10 @@ import type { Message } from "@mojo-jojo/irc-message";
 import type {
   AccountEvent,
   ActionEvent,
+  AwayEvent,
   BaseEvent,
+  BatchEvent,
+  ChghostEvent,
   JoinEvent,
   KickEvent,
   ModeEvent,
@@ -12,6 +15,8 @@ import type {
   PartEvent,
   PrivmsgEvent,
   QuitEvent,
+  SetnameEvent,
+  StandardReplyEvent,
   TopicEvent,
 } from "./types.ts";
 
@@ -85,4 +90,27 @@ export function topicEvent(message: Message, fields: Fields<TopicEvent>): TopicE
 
 export function namesEvent(message: Message, fields: Fields<NamesEvent>): NamesEvent {
   return { type: "names", ...baseEvent(message), ...fields };
+}
+
+export function awayEvent(message: Message, fields: Fields<AwayEvent>): AwayEvent {
+  return { type: "away", ...baseEvent(message), ...fields };
+}
+
+export function chghostEvent(message: Message, fields: Fields<ChghostEvent>): ChghostEvent {
+  return { type: "chghost", ...baseEvent(message), ...fields };
+}
+
+export function setnameEvent(message: Message, fields: Fields<SetnameEvent>): SetnameEvent {
+  return { type: "setname", ...baseEvent(message), ...fields };
+}
+
+export function batchEvent(message: Message, fields: Fields<BatchEvent>): BatchEvent {
+  return { type: "batch", ...baseEvent(message), ...fields };
+}
+
+export function standardReplyEvent(
+  message: Message,
+  fields: Fields<StandardReplyEvent>,
+): StandardReplyEvent {
+  return { type: "standardReply", ...baseEvent(message), ...fields };
 }

@@ -98,6 +98,21 @@ suite("live smoke: irc-client end-to-end (IRC_SMOKE=1)", () => {
         } else {
           console.log("[smoke] echo-message not enabled; skipped round-trip assertion");
         }
+
+        // Exercise labeled-response (M6) live when available. CHATHISTORY needs a
+        // server-side history backend, so this is best-effort: log, don't assert.
+        // Use sendLabeled directly for a short timeout (chatHistory defaults to 30s).
+        if (client.enabledCaps.has("labeled-response")) {
+          try {
+            const history = await client.sendLabeled(
+              { tags: {}, source: null, command: "CHATHISTORY", params: ["LATEST", CHANNEL, "*", "10"] },
+              { timeoutMs: 10000 },
+            );
+            console.log(`[smoke] labeled chathistory returned ${history.length} message(s)`);
+          } catch (err) {
+            console.log(`[smoke] labeled chathistory unavailable: ${(err as Error).message}`);
+          }
+        }
       } finally {
         client.quit("mojo-jojo smoke complete");
       }

@@ -23,6 +23,12 @@ export const DEFAULT_CAPS: readonly string[] = [
   "extended-join",
   "multi-prefix",
   "userhost-in-names",
+  // P2/P3 dynamics (M6): keep the live view current without re-querying.
+  "away-notify",
+  "chghost",
+  "setname",
+  "batch",
+  "labeled-response",
 ];
 
 /** Reconnection options (all optional; merged over {@link DEFAULT_RECONNECT}). */

@@ -164,7 +164,76 @@ export interface NamesEvent extends BaseEvent {
   readonly members: readonly Member[];
 }
 
-/** Discriminated union of every entity-resolved protocol event (M3 + M4). */
+/**
+ * A user's away status changed (`away-notify`). `away` is `true` when they went
+ * away (with the `message` reason), `false` when they returned (`message` null).
+ */
+export interface AwayEvent extends BaseEvent {
+  readonly type: "away";
+  readonly user: User;
+  readonly away: boolean;
+  readonly message: string | null;
+  /** Channels we share with the user (the event is routed to each). */
+  readonly channels: readonly Channel[];
+  readonly isSelf: boolean;
+}
+
+/** A user's username/host changed without reconnecting (`chghost`). */
+export interface ChghostEvent extends BaseEvent {
+  readonly type: "chghost";
+  readonly user: User;
+  readonly newUser: string;
+  readonly newHost: string;
+  readonly channels: readonly Channel[];
+  readonly isSelf: boolean;
+}
+
+/** A user changed their real name (`setname`). */
+export interface SetnameEvent extends BaseEvent {
+  readonly type: "setname";
+  readonly user: User;
+  readonly realName: string;
+  readonly channels: readonly Channel[];
+  readonly isSelf: boolean;
+}
+
+/**
+ * A completed `BATCH` (P2): the reassembled group of messages received between
+ * `BATCH +ref` and `BATCH -ref`. The inner messages also dispatch normally (so
+ * state stays correct for unknown batch types); this event additionally exposes
+ * them as one logical unit (e.g. a `netjoin`, `chathistory`, or labeled batch).
+ */
+export interface BatchEvent extends BaseEvent {
+  readonly type: "batch";
+  /** The batch's reference tag (the identifier after `+`/`-`). */
+  readonly reference: string;
+  /** The batch type token (e.g. `netjoin`, `chathistory`, `labeled-response`). */
+  readonly batchType: string;
+  /** Any parameters that followed the type on the `BATCH +` line. */
+  readonly params: readonly string[];
+  /** The raw messages collected inside the batch (control lines excluded). */
+  readonly messages: readonly Message[];
+}
+
+/**
+ * A standard reply (`FAIL`/`WARN`/`NOTE`): a machine-readable status message for
+ * a command. Carries the subject `command`, a `code`, any `context` params, and a
+ * human-readable `text`. Surfaced on the firehose only (not entity-scoped).
+ */
+export interface StandardReplyEvent extends BaseEvent {
+  readonly type: "standardReply";
+  readonly replyType: "FAIL" | "WARN" | "NOTE";
+  /** The command the reply concerns, or `*` when general. */
+  readonly command: string;
+  /** Machine-readable code (e.g. `ACCOUNT_REQUIRED`). */
+  readonly code: string;
+  /** Extra context params between the code and the description. */
+  readonly context: readonly string[];
+  /** Human-readable description (the trailing param). */
+  readonly text: string;
+}
+
+/** Discriminated union of every entity-resolved protocol event (M3 + M4 + M6). */
 export type IrcEvent =
   | PrivmsgEvent
   | ActionEvent
@@ -175,9 +244,14 @@ export type IrcEvent =
   | KickEvent
   | NickEvent
   | AccountEvent
+  | AwayEvent
+  | ChghostEvent
+  | SetnameEvent
   | ModeEvent
   | TopicEvent
-  | NamesEvent;
+  | NamesEvent
+  | BatchEvent
+  | StandardReplyEvent;
 
 /** The events routed into a {@link User}'s per-entity stream. */
 export type UserEvent =
@@ -186,6 +260,9 @@ export type UserEvent =
   | NoticeEvent
   | NickEvent
   | AccountEvent
+  | AwayEvent
+  | ChghostEvent
+  | SetnameEvent
   | QuitEvent;
 
 /** The events routed into a {@link Channel}'s per-entity stream. */
@@ -199,6 +276,9 @@ export type ChannelEvent =
   | KickEvent
   | NickEvent
   | AccountEvent
+  | AwayEvent
+  | ChghostEvent
+  | SetnameEvent
   | ModeEvent
   | TopicEvent
   | NamesEvent;

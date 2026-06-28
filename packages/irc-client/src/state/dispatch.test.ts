@@ -452,3 +452,206 @@ describe("dispatch — passthrough", () => {
     expect(new Dispatcher(new StateStore("me")).dispatch(event)).toBeNull();
   });
 });
+
+describe("dispatch — P2/P3 caps (M6)", () => {
+  /** Register and put `me` + `alice` together in `#chan`. */
+  function withAlice(): ReturnType<typeof harness> {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":alice!aliceuser@alicehost JOIN #chan");
+    return h;
+  }
+
+  test("away-notify sets/clears away and routes to user + channels", () => {
+    const h = withAlice();
+    const onUser: boolean[] = [];
+    const onChannel: boolean[] = [];
+    h.store.user("alice")!.awayChanges$.subscribe((e) => onUser.push(e.away));
+    h.store.channel("#chan")!.awayChanges$.subscribe((e) => onChannel.push(e.away));
+
+    const gone = h.feed(":alice!aliceuser@alicehost AWAY :be right back");
+    expect(gone?.type).toBe("away");
+    if (gone?.type === "away") {
+      expect(gone.away).toBe(true);
+      expect(gone.message).toBe("be right back");
+    }
+    expect(h.store.user("alice")?.away).toBe(true);
+
+    const back = h.feed(":alice!aliceuser@alicehost AWAY");
+    if (back?.type === "away") {
+      expect(back.away).toBe(false);
+      expect(back.message).toBeNull();
+    }
+    expect(h.store.user("alice")?.away).toBe(false);
+    expect(onUser).toEqual([true, false]);
+    expect(onChannel).toEqual([true, false]);
+  });
+
+  test("chghost updates username/host in place", () => {
+    const h = withAlice();
+    const event = h.feed(":alice!aliceuser@alicehost CHGHOST newuser new.host");
+    expect(event?.type).toBe("chghost");
+    if (event?.type === "chghost") {
+      expect(event.newUser).toBe("newuser");
+      expect(event.newHost).toBe("new.host");
+    }
+    expect(h.store.user("alice")?.username).toBe("newuser");
+    expect(h.store.user("alice")?.host).toBe("new.host");
+  });
+
+  test("setname updates the real name", () => {
+    const h = withAlice();
+    const event = h.feed(":alice!aliceuser@alicehost SETNAME :Alice In Wonderland");
+    expect(event?.type).toBe("setname");
+    if (event?.type === "setname") expect(event.realName).toBe("Alice In Wonderland");
+    expect(h.store.user("alice")?.realName).toBe("Alice In Wonderland");
+  });
+
+  test("away/chghost/setname are ignored for untracked users", () => {
+    const h = harness();
+    register(h);
+    expect(h.feed(":ghost!g@h AWAY :poof")).toBeNull();
+    expect(h.feed(":ghost!g@h CHGHOST u host")).toBeNull();
+    expect(h.feed(":ghost!g@h SETNAME :Ghost")).toBeNull();
+  });
+
+  test("standard replies FAIL/WARN/NOTE parse command/code/context/text", () => {
+    const h = harness();
+    register(h);
+    const fail = h.feed(":irc FAIL JOIN ACCOUNT_REQUIRED #chan :You must register first");
+    expect(fail?.type).toBe("standardReply");
+    if (fail?.type === "standardReply") {
+      expect(fail.replyType).toBe("FAIL");
+      expect(fail.command).toBe("JOIN");
+      expect(fail.code).toBe("ACCOUNT_REQUIRED");
+      expect(fail.context).toEqual(["#chan"]);
+      expect(fail.text).toBe("You must register first");
+    }
+    const warn = h.feed(":irc WARN NICK INVALID :bad nick");
+    if (warn?.type === "standardReply") {
+      expect(warn.replyType).toBe("WARN");
+      expect(warn.context).toEqual([]);
+      expect(warn.text).toBe("bad nick");
+    }
+    const note = h.feed(":irc NOTE * CONNECTED :welcome");
+    expect(note?.type).toBe("standardReply");
+    if (note?.type === "standardReply") expect(note.replyType).toBe("NOTE");
+  });
+
+  test("BATCH reassembles tagged messages and still dispatches them", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+
+    expect(h.feed(":irc BATCH +xyz netjoin irc.hub other.host")).toBeNull();
+    // The inner JOIN dispatches normally (alice becomes a member)...
+    const join = h.feed("@batch=xyz :alice!a@host JOIN #chan");
+    expect(join?.type).toBe("join");
+    expect(h.store.channel("#chan")?.members.has("alice")).toBe(true);
+
+    // ...and is also collected into the batch surfaced on close.
+    const batch = h.feed(":irc BATCH -xyz");
+    expect(batch?.type).toBe("batch");
+    if (batch?.type === "batch") {
+      expect(batch.reference).toBe("xyz");
+      expect(batch.batchType).toBe("netjoin");
+      expect(batch.params).toEqual(["irc.hub", "other.host"]);
+      expect(batch.messages).toHaveLength(1);
+      expect(batch.messages[0]?.command).toBe("JOIN");
+    }
+  });
+
+  test("nested BATCH: inner content belongs to the inner batch", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+
+    h.feed(":irc BATCH +outer example.com/foo");
+    h.feed("@batch=outer :irc BATCH +inner example.com/bar");
+    const pm = h.feed("@batch=inner :alice!a@h PRIVMSG #chan :hi");
+    expect(pm?.type).toBe("privmsg"); // inner message still dispatches
+
+    const inner = h.feed("@batch=outer :irc BATCH -inner");
+    expect(inner?.type).toBe("batch");
+    if (inner?.type === "batch") {
+      expect(inner.reference).toBe("inner");
+      expect(inner.messages).toHaveLength(1);
+      expect(inner.messages[0]?.command).toBe("PRIVMSG");
+    }
+
+    // The outer batch contains the nested batch's control lines (its direct
+    // children), not the deeper PRIVMSG (which belonged to the inner batch).
+    const outer = h.feed(":irc BATCH -outer");
+    if (outer?.type === "batch") {
+      expect(outer.reference).toBe("outer");
+      expect(outer.messages.every((m) => m.command === "BATCH")).toBe(true);
+      expect(outer.messages).toHaveLength(2);
+    }
+
+    const unknown = h.feed(":irc BATCH -nope"); // closing an unknown ref is a no-op
+    expect(unknown).toBeNull();
+  });
+
+  test("352 WHO reply enriches a known user (host/user/realname/away)", () => {
+    const h = withAlice();
+    h.feed(":irc 352 me #chan whoUser whoHost irc.server alice G :3 Alice Gone");
+    const alice = h.store.user("alice")!;
+    expect(alice.username).toBe("whoUser");
+    expect(alice.host).toBe("whoHost");
+    expect(alice.away).toBe(true);
+    expect(alice.realName).toBe("Alice Gone");
+
+    // `H` (here) clears the away flag.
+    h.feed(":irc 352 me #chan whoUser whoHost irc.server alice H :3 Alice Gone");
+    expect(alice.away).toBe(false);
+  });
+
+  test("352 WHO does not create users from WHO output", () => {
+    const h = harness();
+    register(h);
+    expect(h.feed(":irc 352 me #chan u host irc.server nobody H :0 Nobody")).toBeNull();
+    expect(h.store.user("nobody")).toBeUndefined();
+  });
+
+  test("multi-prefix NAMES stacks all status prefixes", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":irc 353 me = #chan :@+alice me");
+    h.feed(":irc 366 me #chan :End of NAMES");
+    const alice = h.store.channel("#chan")?.members.get("alice");
+    expect(alice?.isOp()).toBe(true);
+    expect(alice?.isVoice()).toBe(true);
+  });
+
+  test("userhost-in-names populates user/host from the NAMES entry", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":irc 353 me = #chan :@alice!aliceuser@alicehost me");
+    const alice = h.store.user("alice");
+    expect(alice?.username).toBe("aliceuser");
+    expect(alice?.host).toBe("alicehost");
+    expect(h.store.channel("#chan")?.members.get("alice")?.isOp()).toBe(true);
+  });
+
+  test("BATCH retention is bounded (open count + messages per batch)", () => {
+    const h = harness();
+    register(h);
+
+    // Per-batch message cap (4096): further inner messages still dispatch but
+    // stop being collected, so the BatchEvent never grows without bound.
+    h.feed(":irc BATCH +big example");
+    for (let i = 0; i < 4100; i++) h.feed(`@batch=big :a!a@h PRIVMSG me :m${i}`);
+    const big = h.feed(":irc BATCH -big");
+    expect(big?.type).toBe("batch");
+    if (big?.type === "batch") expect(big.messages.length).toBe(4096);
+
+    // Open-batch cap (64): once the cap is reached, further opens aren't tracked,
+    // so their close is a no-op (but the open/inner lines still pass through).
+    for (let i = 0; i < 64; i++) h.feed(`:irc BATCH +open${i} t`);
+    expect(h.feed(":irc BATCH +overflow t")).toBeNull();
+    expect(h.feed(":irc BATCH -overflow")).toBeNull(); // never tracked
+  });
+});

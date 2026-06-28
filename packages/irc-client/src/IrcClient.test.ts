@@ -587,3 +587,195 @@ describe("IrcClient — unified facade + actions (M5)", () => {
     expect(seen).toEqual([]);
   });
 });
+
+describe("IrcClient — labeled-response + chathistory (M6)", () => {
+  const msg = (command: string, ...params: string[]): Message => ({
+    tags: {},
+    source: null,
+    command,
+    params,
+  });
+
+  /** The `@label=` value of the most recent labeled write. */
+  function labelOf(mock: MockTransport): string {
+    const line = [...mock.written].reverse().find((l) => l.startsWith("@label="));
+    if (line === undefined) throw new Error("no labeled write found");
+    return line.match(/@label=(\S+)/)![1]!;
+  }
+
+  /** Connect and negotiate `caps` so they show up in `enabledCaps`. */
+  async function registerWithCaps(
+    caps: string[],
+  ): Promise<{ client: IrcClient; mock: MockTransport }> {
+    const mock = new MockTransport();
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps,
+      floodDelayMs: 0,
+    });
+    const connected = client.connect();
+    await waitFor(() => mock.written.some((l) => l.startsWith("USER")));
+    mock.receiveLine(`:irc CAP * LS :${caps.join(" ")}`);
+    await waitFor(() => mock.written.some((l) => l.startsWith("CAP REQ")));
+    mock.receiveLine(`:irc CAP mojo ACK :${caps.join(" ")}`);
+    await waitFor(() => mock.written.includes("CAP END\r\n"));
+    mock.receiveLine(":irc 001 mojo :Welcome");
+    await connected;
+    return { client, mock };
+  }
+
+  test("sendLabeled resolves [] on an ACK", async () => {
+    const { client, mock } = await registerWithCaps(["labeled-response"]);
+    const p = client.sendLabeled(msg("AWAY", "brb"));
+    await waitFor(() => mock.written.some((l) => l.startsWith("@label=")));
+    mock.receiveLine(`@label=${labelOf(mock)} :irc ACK`);
+    expect(await p).toEqual([]);
+    client.quit();
+  });
+
+  test("sendLabeled resolves a single labeled reply", async () => {
+    const { client, mock } = await registerWithCaps(["labeled-response"]);
+    const p = client.sendLabeled(msg("WHOIS", "bob"));
+    await waitFor(() => mock.written.some((l) => l.startsWith("@label=")));
+    mock.receiveLine(`@label=${labelOf(mock)} :irc 318 mojo bob :End of WHOIS`);
+    const res = await p;
+    expect(res).toHaveLength(1);
+    expect(res[0]?.command).toBe("318");
+    client.quit();
+  });
+
+  test("chatHistory resolves the labeled batch's inner messages", async () => {
+    const { client, mock } = await registerWithCaps(["labeled-response", "batch", "server-time"]);
+    const p = client.chatHistory("LATEST", "#chan", "*", "2");
+    await waitFor(() => mock.written.some((l) => l.includes("CHATHISTORY")));
+    const label = labelOf(mock);
+    mock.receiveLine(`@label=${label} :irc BATCH +hh chathistory #chan`);
+    mock.receiveLine(`@batch=hh :alice!a@h PRIVMSG #chan :old one`);
+    mock.receiveLine(`@batch=hh :bob!b@h PRIVMSG #chan :old two`);
+    mock.receiveLine(":irc BATCH -hh");
+    const res = await p;
+    expect(res.map((m) => m.command)).toEqual(["PRIVMSG", "PRIVMSG"]);
+    expect(res.map((m) => m.params[1])).toEqual(["old one", "old two"]);
+    client.quit();
+  });
+
+  test("sendLabeled rejects when labeled-response is not enabled", async () => {
+    const { client } = await registerClient(); // caps: [] → cap not enabled
+    let error: unknown;
+    await client.sendLabeled(msg("AWAY", "x")).catch((e: unknown) => {
+      error = e;
+    });
+    expect((error as Error).message).toContain("labeled-response");
+    client.quit();
+  });
+
+  test("sendLabeled rejects on timeout", async () => {
+    const { client } = await registerWithCaps(["labeled-response"]);
+    let error: unknown;
+    await client.sendLabeled(msg("AWAY", "x"), { timeoutMs: 20 }).catch((e: unknown) => {
+      error = e;
+    });
+    expect((error as Error).message).toContain("timed out");
+    client.quit();
+  });
+
+  test("sendLabeled rejects if the connection closes before the reply", async () => {
+    const { client, mock } = await registerWithCaps(["labeled-response"]);
+    let error: unknown;
+    const p = client.sendLabeled(msg("AWAY", "x")).catch((e: unknown) => {
+      error = e;
+    });
+    await waitFor(() => mock.written.some((l) => l.startsWith("@label=")));
+    client.quit();
+    await p;
+    expect((error as Error).message).toContain("closed before response");
+  });
+
+  test("sendLabeled rejects if the connection drops before the reply", async () => {
+    const { client, mock } = await registerWithCaps(["labeled-response"]);
+    let error: unknown;
+    const p = client.sendLabeled(msg("AWAY", "x")).catch((e: unknown) => {
+      error = e;
+    });
+    await waitFor(() => mock.written.some((l) => l.startsWith("@label=")));
+    mock.fail(new Error("socket hung up"));
+    await p;
+    expect((error as Error).message).toContain("connection dropped before response");
+    client.quit();
+  });
+
+  test("enabledCaps clears during the reconnect window (no stale caps)", async () => {
+    const mocks: MockTransport[] = [];
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => {
+        const m = new MockTransport();
+        mocks.push(m);
+        return m;
+      },
+      caps: ["labeled-response", "batch"],
+      floodDelayMs: 0,
+      reconnect: { enabled: true, initialDelayMs: 1, factor: 1, jitter: false, maxDelayMs: 5 },
+    });
+    const connected = client.connect();
+    await waitFor(() => mocks.length === 1 && mocks[0]!.written.some((l) => l.startsWith("USER")));
+    mocks[0]!.receiveLine(":irc CAP * LS :labeled-response batch");
+    await waitFor(() => mocks[0]!.written.some((l) => l.startsWith("CAP REQ")));
+    mocks[0]!.receiveLine(":irc CAP mojo ACK :labeled-response batch");
+    await waitFor(() => mocks[0]!.written.includes("CAP END\r\n"));
+    mocks[0]!.receiveLine(":irc 001 mojo :hi");
+    await connected;
+    expect(client.enabledCaps.has("labeled-response")).toBe(true);
+
+    // Drop, then wait for the new attempt to start re-negotiating caps. In that
+    // window the queue exists but registration isn't done — caps must read empty,
+    // not the previous connection's set, so sendLabeled's guard correctly rejects.
+    mocks[0]!.fail(new Error("reset"));
+    await waitFor(
+      () => mocks.length === 2 && mocks[1]!.written.some((l) => l.startsWith("CAP LS")),
+      2000,
+    );
+    expect(client.enabledCaps.has("labeled-response")).toBe(false);
+    let error: unknown;
+    await client.sendLabeled(msg("AWAY", "x")).catch((e: unknown) => {
+      error = e;
+    });
+    expect((error as Error).message).toContain("labeled-response");
+    client.quit();
+  });
+
+  test("enabledCaps clears on an abnormal drop (no stale caps in the backoff gap)", async () => {
+    // reconnect disabled: nothing re-registers, so this isolates the drop teardown.
+    const mock = new MockTransport();
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps: ["labeled-response", "batch"],
+      floodDelayMs: 0,
+      reconnect: { enabled: false },
+    });
+    const connected = client.connect();
+    await waitFor(() => mock.written.some((l) => l.startsWith("USER")));
+    mock.receiveLine(":irc CAP * LS :labeled-response batch");
+    await waitFor(() => mock.written.some((l) => l.startsWith("CAP REQ")));
+    mock.receiveLine(":irc CAP mojo ACK :labeled-response batch");
+    await waitFor(() => mock.written.includes("CAP END\r\n"));
+    mock.receiveLine(":irc 001 mojo :hi");
+    await connected;
+    expect(client.enabledCaps.has("labeled-response")).toBe(true);
+
+    // The drop teardown must clear caps immediately — not leave them stale until
+    // some later attempt starts (there is no later attempt here).
+    mock.fail(new Error("reset"));
+    await waitFor(() => !client.enabledCaps.has("labeled-response"));
+    expect([...client.enabledCaps]).toEqual([]);
+    client.quit();
+  });
+});

@@ -25,6 +25,12 @@ describe("resolveOptions", () => {
     expect(resolveOptions({ host: "irc.test", nick: "mojo", caps: "all" }).caps).toBe("all");
   });
 
+  test("curated caps include the M6 P2/P3 dynamics", () => {
+    for (const cap of ["away-notify", "chghost", "setname", "batch", "labeled-response"]) {
+      expect(DEFAULT_CAPS).toContain(cap);
+    }
+  });
+
   test("merges reconnect overrides over the defaults", () => {
     const resolved = resolveOptions({
       host: "irc.test",

@@ -6,7 +6,10 @@
 // live state tracking (casemapping, ISUPPORT, entities) and the entity-resolved
 // event taxonomy. M4 adds SASL (PLAIN/EXTERNAL) and the `account-notify`
 // dynamic. M5 adds the action methods, the `MemberList.by` index sugar, and the
-// unified `ClientEvent` surface + top-level `.on()`/`once()`/`off()` facade.
+// unified `ClientEvent` surface + top-level `.on()`/`once()`/`off()` facade. M6
+// adds the P2/P3 cap dynamics: away-notify, chghost, setname, BATCH reassembly,
+// standard replies (FAIL/WARN/NOTE), WHO enrichment, and labeled-response
+// correlation (`sendLabeled`/`chatHistory`).
 
 // High-level facade
 export { IrcClient, type ClientState, type IrcClientInternals } from "./IrcClient.ts";
@@ -38,9 +41,14 @@ export type {
   KickEvent,
   NickEvent,
   AccountEvent,
+  AwayEvent,
+  ChghostEvent,
+  SetnameEvent,
   ModeEvent,
   TopicEvent,
   NamesEvent,
+  BatchEvent,
+  StandardReplyEvent,
 } from "./events/types.ts";
 export * as eventFactory from "./events/factory.ts";
 

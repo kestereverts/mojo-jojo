@@ -86,6 +86,27 @@ describe("reconcileCaps", () => {
     const noSasl = new Map<string, CapValue>([["multi-prefix", null]]);
     expect(reconcileCaps(["multi-prefix"], noSasl, true)).toEqual(["multi-prefix"]);
   });
+
+  test("auto-requests batch as a dependency of labeled-response", () => {
+    const withDeps = new Map<string, CapValue>([
+      ["labeled-response", null],
+      ["batch", null],
+      ["multi-prefix", null],
+    ]);
+    // batch is pulled in even though it wasn't listed...
+    expect(reconcileCaps(["labeled-response"], withDeps, false)).toEqual([
+      "labeled-response",
+      "batch",
+    ]);
+    // ...without duplicating it when already present.
+    expect(reconcileCaps(["batch", "labeled-response"], withDeps, false)).toEqual([
+      "batch",
+      "labeled-response",
+    ]);
+    // ...and not if the server doesn't advertise batch.
+    const noBatch = new Map<string, CapValue>([["labeled-response", null]]);
+    expect(reconcileCaps(["labeled-response"], noBatch, false)).toEqual(["labeled-response"]);
+  });
 });
 
 describe("CapabilityStore", () => {

@@ -33,8 +33,26 @@ interface NamesEntry {
   host?: string;
 }
 
+/** An open `BATCH` being reassembled (M6). */
+interface OpenBatch {
+  readonly batchType: string;
+  readonly params: readonly string[];
+  readonly messages: Message[];
+}
+
+/**
+ * Bounds on retained batch state so a server that opens batches but never sends
+ * the matching `BATCH -` (malformed or hostile) can't grow memory without limit.
+ * Inner messages always dispatch regardless; only the (optional) reassembled
+ * grouping is capped. Generous enough not to clip a real netjoin/chathistory.
+ */
+const MAX_OPEN_BATCHES = 64;
+const MAX_BATCH_MESSAGES = 4096;
+
 export class Dispatcher {
   readonly #store: StateStore;
+  /** Open batches by reference tag; entries collect their tagged messages (M6). */
+  readonly #batches = new Map<string, OpenBatch>();
 
   constructor(store: StateStore) {
     this.#store = store;
@@ -42,6 +60,18 @@ export class Dispatcher {
 
   /** Translate one inbound message, mutating state and routing entity events. */
   dispatch(message: Message): IrcEvent | null {
+    // BATCH reassembly (P2): if this message belongs to an open batch, collect it.
+    // It still dispatches normally below — per the spec, a client processes a
+    // batch's messages even when it doesn't recognise the batch type; the
+    // collected group is additionally surfaced as a BatchEvent when it closes.
+    const batchRef = message.tags["batch"];
+    if (batchRef !== undefined) {
+      const batch = this.#batches.get(batchRef);
+      // Cap per-batch retention; over the limit the message still dispatches but
+      // is no longer collected for the BatchEvent.
+      if (batch && batch.messages.length < MAX_BATCH_MESSAGES) batch.messages.push(message);
+    }
+
     switch (message.command) {
       case numerics.RPL_WELCOME:
         return this.#welcome(message);
@@ -68,6 +98,12 @@ export class Dispatcher {
         return this.#nick(message);
       case "ACCOUNT":
         return this.#account(message);
+      case "AWAY":
+        return this.#away(message);
+      case "CHGHOST":
+        return this.#chghost(message);
+      case "SETNAME":
+        return this.#setname(message);
       case "MODE":
         return this.#mode(message);
       case "TOPIC":
@@ -76,6 +112,16 @@ export class Dispatcher {
         return this.#privmsg(message);
       case "NOTICE":
         return this.#notice(message);
+      case "BATCH":
+        return this.#batch(message);
+      case "FAIL":
+        return this.#standardReply(message, "FAIL");
+      case "WARN":
+        return this.#standardReply(message, "WARN");
+      case "NOTE":
+        return this.#standardReply(message, "NOTE");
+      case numerics.RPL_WHOREPLY:
+        return this.#whoReply(message);
       default:
         return null;
     }
@@ -352,6 +398,149 @@ export class Dispatcher {
     user[EMIT](event);
     for (const channel of channels) channel[EMIT](event);
     return event;
+  }
+
+  /**
+   * `away-notify`: `:nick!u@h AWAY [:message]`. A present message means the user
+   * is now away; an absent one means they returned. Routes to the user + shared
+   * channels. Ignored for untracked users.
+   */
+  #away(message: Message): IrcEvent | null {
+    const source = message.source;
+    if (source === null || !this.#isUserSource(source)) return null;
+    const user = this.#store.user(source.name);
+    if (!user) return null;
+    user.updateFromSource(source);
+    const reason = message.params[0] ?? null;
+    const away = reason !== null;
+    user.setAway(away);
+    const channels = this.#store.channelsWithUser(source.name);
+    const event = factory.awayEvent(message, {
+      user,
+      away,
+      message: reason,
+      channels,
+      isSelf: this.#store.isSelf(source.name),
+    });
+    user[EMIT](event);
+    for (const channel of channels) channel[EMIT](event);
+    return event;
+  }
+
+  /**
+   * `chghost`: `:nick!olduser@oldhost CHGHOST <newuser> <newhost>`. Updates the
+   * user's username/host in place. Ignored for untracked users.
+   */
+  #chghost(message: Message): IrcEvent | null {
+    const source = message.source;
+    if (source === null || !this.#isUserSource(source)) return null;
+    const user = this.#store.user(source.name);
+    if (!user) return null;
+    const newUser = message.params[0];
+    const newHost = message.params[1];
+    if (newUser === undefined || newHost === undefined) return null;
+    user.updateFromSource({ name: source.name, user: newUser, host: newHost });
+    const channels = this.#store.channelsWithUser(source.name);
+    const event = factory.chghostEvent(message, {
+      user,
+      newUser,
+      newHost,
+      channels,
+      isSelf: this.#store.isSelf(source.name),
+    });
+    user[EMIT](event);
+    for (const channel of channels) channel[EMIT](event);
+    return event;
+  }
+
+  /** `setname`: `:nick!u@h SETNAME :<realname>`. Updates the user's real name. */
+  #setname(message: Message): IrcEvent | null {
+    const source = message.source;
+    if (source === null || !this.#isUserSource(source)) return null;
+    const user = this.#store.user(source.name);
+    if (!user) return null;
+    user.updateFromSource(source);
+    const realName = message.params[0] ?? "";
+    user.setRealName(realName);
+    const channels = this.#store.channelsWithUser(source.name);
+    const event = factory.setnameEvent(message, {
+      user,
+      realName,
+      channels,
+      isSelf: this.#store.isSelf(source.name),
+    });
+    user[EMIT](event);
+    for (const channel of channels) channel[EMIT](event);
+    return event;
+  }
+
+  /**
+   * `BATCH +ref type [params]` opens a batch; `BATCH -ref` closes it and emits a
+   * {@link BatchEvent} with the reassembled messages. Inner messages were already
+   * collected (and dispatched) as they arrived. Unknown/unopened refs are no-ops.
+   */
+  #batch(message: Message): IrcEvent | null {
+    const token = message.params[0];
+    if (token === undefined || token.length < 1) return null;
+    const reference = token.slice(1);
+    if (token[0] === "+") {
+      // Bound the number of concurrently-open batches; past the cap we don't
+      // track this one (its inner messages still dispatch, the close is a no-op).
+      if (this.#batches.size >= MAX_OPEN_BATCHES) return null;
+      this.#batches.set(reference, {
+        batchType: message.params[1] ?? "",
+        params: message.params.slice(2),
+        messages: [],
+      });
+      return null;
+    }
+    if (token[0] === "-") {
+      const batch = this.#batches.get(reference);
+      if (!batch) return null;
+      this.#batches.delete(reference);
+      return factory.batchEvent(message, {
+        reference,
+        batchType: batch.batchType,
+        params: batch.params,
+        messages: batch.messages,
+      });
+    }
+    return null;
+  }
+
+  /**
+   * Standard replies `FAIL`/`WARN`/`NOTE`:
+   * `<verb> <command> <code> [<context>...] :<description>`. Firehose-only.
+   */
+  #standardReply(message: Message, replyType: "FAIL" | "WARN" | "NOTE"): IrcEvent {
+    const params = message.params;
+    const command = params[0] ?? "*";
+    const code = params[1] ?? "";
+    const text = params.length > 2 ? (params[params.length - 1] ?? "") : "";
+    const context = params.length > 3 ? params.slice(2, -1) : [];
+    return factory.standardReplyEvent(message, { replyType, command, code, context, text });
+  }
+
+  /**
+   * `352` RPL_WHOREPLY: `<me> <channel> <user> <host> <server> <nick> <flags>
+   * :<hopcount> <realname>`. Enriches an already-known user (host/user/realname,
+   * and the away flag from `G`); does not create users from WHO output.
+   */
+  #whoReply(message: Message): null {
+    const nick = message.params[5];
+    if (nick === undefined) return null;
+    const user = this.#store.user(nick);
+    if (!user) return null;
+    user.updateFromSource({ name: nick, user: message.params[2], host: message.params[3] });
+    const flags = message.params[6];
+    if (flags !== undefined) user.setAway(flags.includes("G"));
+    const trailing = message.params[7];
+    if (trailing !== undefined) {
+      const space = trailing.indexOf(" ");
+      const realName = space === -1 ? "" : trailing.slice(space + 1);
+      if (realName !== "") user.setRealName(realName);
+    }
+    return null;
   }
 
   #mode(message: Message): IrcEvent | null {

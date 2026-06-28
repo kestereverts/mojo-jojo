@@ -94,6 +94,16 @@ export function parseCapMessage(message: Message): CapMessage | null {
 }
 
 /**
+ * Capability dependencies: requesting the key cap implies its values, so they
+ * are auto-added when advertised. `labeled-response` multi-line replies arrive
+ * wrapped in a `BATCH`, so requesting it without `batch` would mean some replies
+ * could not be reassembled — we pull `batch` in to match intent.
+ */
+const CAP_DEPENDENCIES: ReadonlyMap<string, readonly string[]> = new Map([
+  ["labeled-response", ["batch"]],
+]);
+
+/**
  * Reconcile the capabilities we want against what the server advertised.
  *
  * With an explicit list, returns the subset the server offers, preserving the
@@ -105,6 +115,9 @@ export function parseCapMessage(message: Message): CapMessage | null {
  * with); when true it is always included if advertised — even if the caller's
  * explicit list omitted it — so configuring credentials is sufficient on its own
  * and never silently fails to request the cap.
+ *
+ * Capability dependencies (see {@link CAP_DEPENDENCIES}) are likewise auto-added
+ * when advertised, so e.g. requesting `labeled-response` also requests `batch`.
  */
 export function reconcileCaps(
   desired: readonly string[] | "all",
@@ -120,6 +133,12 @@ export function reconcileCaps(
   }
   if (saslRequested && available.has("sasl") && !requested.includes("sasl")) {
     requested.push("sasl");
+  }
+  // Pull in dependencies of anything we're requesting (when advertised).
+  for (const cap of [...requested]) {
+    for (const dep of CAP_DEPENDENCIES.get(cap) ?? []) {
+      if (available.has(dep) && !requested.includes(dep)) requested.push(dep);
+    }
   }
   return requested;
 }

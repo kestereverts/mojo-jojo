@@ -4,10 +4,13 @@ import { ReactiveEntity } from "./ReactiveEntity.ts";
 import type {
   AccountEvent,
   ActionEvent,
+  AwayEvent,
+  ChghostEvent,
   NickEvent,
   NoticeEvent,
   PrivmsgEvent,
   QuitEvent,
+  SetnameEvent,
   UserEvent,
 } from "../events/types.ts";
 
@@ -54,7 +57,7 @@ export class User extends ReactiveEntity<UserEvent> {
   get account(): string | null {
     return this.#account;
   }
-  /** Whether the user is marked away (populated once away-notify lands in M4). */
+  /** Whether the user is marked away (`away-notify`). */
   get away(): boolean {
     return this.#away;
   }
@@ -82,6 +85,18 @@ export class User extends ReactiveEntity<UserEvent> {
   /** This user logging in to / out of a services account (`account-notify`). */
   get accountChanges$(): Observable<AccountEvent> {
     return this.stream("account");
+  }
+  /** This user going away / returning (`away-notify`). */
+  get awayChanges$(): Observable<AwayEvent> {
+    return this.stream("away");
+  }
+  /** This user's username/host changing in place (`chghost`). */
+  get chghost$(): Observable<ChghostEvent> {
+    return this.stream("chghost");
+  }
+  /** This user's real-name changing (`setname`). */
+  get setname$(): Observable<SetnameEvent> {
+    return this.stream("setname");
   }
   /** This user quitting the network. */
   get quit$(): Observable<QuitEvent> {
