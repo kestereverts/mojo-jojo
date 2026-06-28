@@ -1,6 +1,7 @@
 import {
   defer,
   filter,
+  merge,
   Observable,
   Subject,
   Subscription,
@@ -10,14 +11,33 @@ import {
 import type { Message } from "@mojo-jojo/irc-message";
 import { createMessageStream } from "./pipeline/IrcPipeline.ts";
 import { OutboundQueue } from "./pipeline/outbound.ts";
-import { pong, quit as quitCommand } from "./protocol/commands.ts";
+import {
+  action as actionCommand,
+  away as awayCommand,
+  command as rawCommand,
+  invite as inviteCommand,
+  join as joinCommand,
+  kick as kickCommand,
+  mode as modeCommand,
+  names as namesCommand,
+  nick as nickCommand,
+  notice as noticeCommand,
+  part as partCommand,
+  pong,
+  privmsg as privmsgCommand,
+  quit as quitCommand,
+  topic as topicCommand,
+  who as whoCommand,
+  whois as whoisCommand,
+} from "./protocol/commands.ts";
 import { register, type RegistrationOptions } from "./protocol/registration.ts";
 import type { CapabilityStore } from "./protocol/capabilities.ts";
 import { retryWithBackoff, type BackoffDeps } from "./reconnect.ts";
 import { resolveOptions, type IrcClientOptions, type ResolvedOptions } from "./options.ts";
 import type { Transport } from "./transport/Transport.ts";
+import { EventFacade, type Unsubscribe } from "./entities/EventFacade.ts";
 import type { LifecycleEvent } from "./events/lifecycle.ts";
-import type { IrcEvent } from "./events/types.ts";
+import type { ClientEvent, IrcEvent } from "./events/types.ts";
 import { StateStore } from "./state/StateStore.ts";
 import { Dispatcher } from "./state/dispatch.ts";
 import type { Server } from "./entities/Server.ts";
@@ -55,13 +75,22 @@ function defaultDispatchErrorHandler(error: unknown, message: Message): void {
  * {@link messages$} inbound stream and {@link lifecycle$} connection stream,
  * automatic `PING`→`PONG`, and exponential-backoff reconnection. M3 adds live
  * state ({@link server}/{@link channels}/{@link users}/{@link channel}/
- * {@link user}) and the entity-resolved {@link events$} firehose; the unified
- * `.on()` facade arrives in M5.
+ * {@link user}) and the entity-resolved {@link events$} firehose. M5 adds the
+ * action methods ({@link say}/{@link join}/…) and the unified `.on()` facade:
+ * {@link on}/{@link once}/{@link off} and {@link clientEvents$} range over the
+ * combined `ClientEvent` surface (protocol events + lifecycle events), mirroring
+ * the per-entity facade so one subscription can see `"privmsg"` and `"registered"`.
  *
  * `messages$`, `events$`, and `lifecycle$` are stable across reconnects — they
  * are owned Subjects the per-attempt pipeline feeds into, so subscribers
  * attached once survive transport churn and only complete on {@link quit}. The
  * {@link server} state, by contrast, is rebuilt per connection.
+ *
+ * Note: rather than extending `ReactiveEntity`, the client *composes* the shared
+ * {@link EventFacade} over a `merge` of its two long-lived event subjects. That
+ * keeps the established protocol-only {@link events$} getter and the separate
+ * {@link lifecycle$} stream intact (a `ReactiveEntity` base would force a single
+ * `events$` of the combined union), while still reusing one on/once/off impl.
  */
 export class IrcClient {
   readonly #options: ResolvedOptions;
@@ -73,6 +102,10 @@ export class IrcClient {
   readonly #events = new Subject<IrcEvent>();
   /** Public connection lifecycle stream. */
   readonly #lifecycle = new Subject<LifecycleEvent>();
+  /** Unified protocol + lifecycle firehose (M5); the `.on()` facade reads it. */
+  readonly #clientEvents: Observable<ClientEvent>;
+  /** Shared EventEmitter-style facade over {@link #clientEvents}. */
+  readonly #facade: EventFacade<ClientEvent>;
   /** Fires once on {@link quit} to tear down every long-lived subscription. */
   readonly #teardown = new Subject<void>();
 
@@ -90,6 +123,11 @@ export class IrcClient {
     this.#options = resolveOptions(options);
     this.#internals = internals;
     this.#nick = this.#options.nick;
+    // The two hot subjects are already initialized (field order); merge them into
+    // the unified surface the facade ranges over. No share() needed — both are
+    // multicast Subjects, so each subscription forwards directly.
+    this.#clientEvents = merge(this.#events, this.#lifecycle);
+    this.#facade = new EventFacade<ClientEvent>(this.#clientEvents);
   }
 
   /** The current/last nickname (updated after `433` fallback and registration). */
@@ -119,12 +157,50 @@ export class IrcClient {
 
   /**
    * Stable, entity-resolved protocol event stream (the firehose). Survives
-   * reconnects and completes on {@link quit}. The unified `ClientEvent` surface
-   * and the top-level `.on()` facade arrive in M5; per-entity streams are on the
-   * entities returned by {@link channel}/{@link user}.
+   * reconnects and completes on {@link quit}. For the combined protocol +
+   * lifecycle surface, use {@link clientEvents$} or the {@link on} facade;
+   * per-entity streams are on the entities returned by {@link channel}/{@link user}.
    */
   get events$(): Observable<IrcEvent> {
     return this.#events.asObservable();
+  }
+
+  /**
+   * The unified `ClientEvent` firehose (M5): every protocol {@link events$} event
+   * *and* every {@link lifecycle$} event, interleaved by emission order. This is
+   * the RxJS-first equivalent of the {@link on} facade; completes on {@link quit}.
+   */
+  get clientEvents$(): Observable<ClientEvent> {
+    return this.#clientEvents;
+  }
+
+  /**
+   * Subscribe to one event `type` across the unified protocol + lifecycle
+   * surface, e.g. `client.on("privmsg", …)` or `client.on("registered", …)`.
+   * Returns an unsubscribe function; the handler is also removable via
+   * {@link off}. Equivalent to filtering {@link clientEvents$} by `type`.
+   */
+  on<T extends ClientEvent["type"]>(
+    type: T,
+    handler: (event: Extract<ClientEvent, { type: T }>) => void,
+  ): Unsubscribe {
+    return this.#facade.on(type, handler);
+  }
+
+  /** Like {@link on} but auto-unsubscribes after the first matching event. */
+  once<T extends ClientEvent["type"]>(
+    type: T,
+    handler: (event: Extract<ClientEvent, { type: T }>) => void,
+  ): Unsubscribe {
+    return this.#facade.once(type, handler);
+  }
+
+  /** Remove a handler previously registered with {@link on}/{@link once}. */
+  off<T extends ClientEvent["type"]>(
+    type: T,
+    handler: (event: Extract<ClientEvent, { type: T }>) => void,
+  ): void {
+    this.#facade.off(type, handler);
   }
 
   /** The live server-state aggregate for the current connection, or `null`. */
@@ -232,14 +308,106 @@ export class IrcClient {
     this.#queue?.close();
     this.#queue = null;
     this.#transport = null;
+    // Drop facade listeners first (deterministic for leak tests), then complete
+    // the source subjects — which also completes the merged #clientEvents stream.
+    this.#facade.disposeListeners();
     this.#messages.complete();
     this.#events.complete();
     this.#lifecycle.complete();
   }
 
-  /** Enqueue a message on the flood-controlled outbound path. */
+  /**
+   * Enqueue a message on the flood-controlled outbound path. A no-op when there
+   * is no active connection (before {@link connect} resolves or after
+   * {@link quit}); the action helpers below share this behaviour.
+   */
   send(message: Message): void {
     this.#queue?.send(message);
+  }
+
+  // ---- Actions (M5) ----
+  //
+  // Ergonomic wrappers over the command builders, all routed through the
+  // flood-controlled {@link send}. They mutate nothing locally: state updates
+  // come back from the server (echo-message, JOIN, NICK, MODE, …) through the
+  // normal inbound pipeline, so the local view never diverges from the server's.
+
+  /** Send a `PRIVMSG` to a channel or user. */
+  say(target: string, text: string): void {
+    this.send(privmsgCommand(target, text));
+  }
+
+  /** Send a `NOTICE` to a channel or user. */
+  notice(target: string, text: string): void {
+    this.send(noticeCommand(target, text));
+  }
+
+  /** Send a CTCP `ACTION` (`/me`) to a channel or user. */
+  action(target: string, text: string): void {
+    this.send(actionCommand(target, text));
+  }
+
+  /** Join a channel, optionally with a key. */
+  join(channel: string, key?: string): void {
+    this.send(joinCommand(channel, key));
+  }
+
+  /** Leave a channel, optionally with a reason. */
+  part(channel: string, reason?: string): void {
+    this.send(partCommand(channel, reason));
+  }
+
+  /** Kick a user from a channel, optionally with a reason. */
+  kick(channel: string, nick: string, reason?: string): void {
+    this.send(kickCommand(channel, nick, reason));
+  }
+
+  /**
+   * Request a nick change (`NICK`). Named `setNick` to avoid shadowing the
+   * {@link nick} getter; our tracked nick updates when the server confirms it.
+   */
+  setNick(newNick: string): void {
+    this.send(nickCommand(newNick));
+  }
+
+  /** Set (or, with no `modes`, query) channel or user modes. */
+  mode(target: string, modes?: string, ...params: string[]): void {
+    this.send(modeCommand(target, modes, ...params));
+  }
+
+  /** Set a channel topic, or query it when `newTopic` is omitted. */
+  topic(channel: string, newTopic?: string): void {
+    this.send(topicCommand(channel, newTopic));
+  }
+
+  /** Invite a user to a channel. */
+  invite(nick: string, channel: string): void {
+    this.send(inviteCommand(nick, channel));
+  }
+
+  /** Request `WHOIS` detail for a nick. */
+  whois(target: string): void {
+    this.send(whoisCommand(target));
+  }
+
+  /** Request a `WHO` listing for a channel or user mask. */
+  who(mask: string): void {
+    this.send(whoCommand(mask));
+  }
+
+  /** Request a channel's `NAMES` listing. */
+  names(channel: string): void {
+    this.send(namesCommand(channel));
+  }
+
+  /** Set our away status with a reason, or clear it when `reason` is omitted. */
+  away(reason?: string): void {
+    this.send(awayCommand(reason));
+  }
+
+  /** Send an arbitrary raw command (with ordered params) through the queue. */
+  raw(commandName: string, ...params: string[]): void {
+    this.send(rawCommand(commandName, ...params));
   }
 
   #emit(event: LifecycleEvent): void {

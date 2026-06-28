@@ -164,6 +164,73 @@ describe("ReactiveEntity facade", () => {
   });
 });
 
+describe("MemberList.by (proxy index sugar)", () => {
+  function listWith(...nicks: string[]): { channel: Channel } {
+    const server = freshServer();
+    const channel = new Channel("#chan", server);
+    for (const n of nicks) channel.members.add(new Member(new User(n), channel));
+    return { channel };
+  }
+
+  test("indexes by nick, case-insensitively, with undefined for absent nicks", () => {
+    const { channel } = listWith("Alice", "Bob");
+    expect(channel.members.by["Alice"]?.nick).toBe("Alice");
+    // rfc1459 default folds case, so a differently-cased key still resolves.
+    expect(channel.members.by["alice"]?.nick).toBe("Alice");
+    expect(channel.members.by.Bob?.nick).toBe("Bob");
+    expect(channel.members.by["carol"]).toBeUndefined();
+  });
+
+  test("supports `in`, key enumeration, and stays consistent with .get()", () => {
+    const { channel } = listWith("Alice", "Bob");
+    expect("Alice" in channel.members.by).toBe(true);
+    expect("carol" in channel.members.by).toBe(false);
+    expect(new Set(Object.keys(channel.members.by))).toEqual(new Set(["Alice", "Bob"]));
+    expect(channel.members.by["Alice"]).toBe(channel.members.get("Alice"));
+  });
+
+  test("a member whose nick collides with a method name is not shadowed", () => {
+    // `get`/`size`/`has` are valid IRC nicks; the proxy view must still find them
+    // while the method surface on MemberList stays intact.
+    const { channel } = listWith("get", "size");
+    expect(channel.members.by["get"]?.nick).toBe("get");
+    expect(channel.members.by["size"]?.nick).toBe("size");
+    expect(typeof channel.members.get).toBe("function");
+    expect(channel.members.size).toBe(2);
+  });
+
+  test("reflects live membership changes (same memoized proxy)", () => {
+    const { channel } = listWith("Alice");
+    const view = channel.members.by;
+    expect(view["Bob"]).toBeUndefined();
+    channel.members.add(new Member(new User("Bob"), channel));
+    expect(view["Bob"]?.nick).toBe("Bob");
+    channel.members.remove("Alice");
+    expect(view["Alice"]).toBeUndefined();
+  });
+
+  test("is read-only and cannot be locked (proxy invariants hold)", () => {
+    const { channel } = listWith("Alice", "Bob");
+    const view = channel.members.by;
+
+    // Mutation/extension are rejected, so the virtual `ownKeys` can never violate
+    // the non-extensible invariant (which would otherwise throw on enumeration).
+    expect(() => Object.preventExtensions(view)).toThrow();
+    expect(() => Object.freeze(view)).toThrow();
+    expect(() => Object.defineProperty(view, "carol", { value: undefined })).toThrow();
+
+    // Enumeration still works after those rejected attempts.
+    expect(new Set(Object.keys(view))).toEqual(new Set(["Alice", "Bob"]));
+
+    // A write is ignored (no real backing prop is created) and never shadows .get().
+    const mutable = view as unknown as Record<string, unknown>;
+    expect(() => {
+      mutable["carol"] = 123;
+    }).toThrow(); // strict-mode assignment to a `set: () => false` trap throws
+    expect(view["carol"]).toBeUndefined();
+  });
+});
+
 describe("Server", () => {
   test("applyIsupport accumulates and exposes typed view", () => {
     const server = new Server("me");

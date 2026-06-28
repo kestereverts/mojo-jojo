@@ -11,9 +11,11 @@ import type {
   KickEvent,
   ModeEvent,
   NamesEvent,
+  NickEvent,
   NoticeEvent,
   PartEvent,
   PrivmsgEvent,
+  QuitEvent,
   TopicEvent,
 } from "../events/types.ts";
 
@@ -81,6 +83,14 @@ export class Channel extends ReactiveEntity<ChannelEvent> {
   }
   get kicks$(): Observable<KickEvent> {
     return this.stream("kick");
+  }
+  /** Nick changes of this channel's members (routed to every shared channel). */
+  get nickChanges$(): Observable<NickEvent> {
+    return this.stream("nick");
+  }
+  /** Quits by this channel's members (routed just before they are removed). */
+  get quits$(): Observable<QuitEvent> {
+    return this.stream("quit");
   }
   get topicChanges$(): Observable<TopicEvent> {
     return this.stream("topic");

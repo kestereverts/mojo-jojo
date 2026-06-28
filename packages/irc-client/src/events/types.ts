@@ -3,6 +3,7 @@ import type { Channel } from "../entities/Channel.ts";
 import type { User } from "../entities/User.ts";
 import type { Member } from "../entities/Member.ts";
 import type { ModeChange } from "../protocol/modeParser.ts";
+import type { LifecycleEvent } from "./lifecycle.ts";
 
 // The rich, entity-resolved event taxonomy produced by the dispatcher (M3).
 //
@@ -201,3 +202,12 @@ export type ChannelEvent =
   | ModeEvent
   | TopicEvent
   | NamesEvent;
+
+/**
+ * The unified top-level event surface (M5): every entity-resolved protocol event
+ * plus every connection {@link LifecycleEvent}. This is what the `IrcClient`
+ * `.on()`/`.once()`/`.off()` facade and the `clientEvents$` firehose range over,
+ * so a single subscription can observe both `"privmsg"` and `"registered"`. The
+ * two unions share no `type` discriminant, so narrowing stays unambiguous.
+ */
+export type ClientEvent = IrcEvent | LifecycleEvent;

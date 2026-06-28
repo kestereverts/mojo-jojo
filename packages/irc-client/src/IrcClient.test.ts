@@ -4,7 +4,7 @@ import { IrcClient } from "./IrcClient.ts";
 import { MockTransport } from "./transport/MockTransport.ts";
 import type { IrcClientOptions } from "./options.ts";
 import type { LifecycleEvent } from "./events/lifecycle.ts";
-import type { IrcEvent } from "./events/types.ts";
+import type { ClientEvent, IrcEvent, PrivmsgEvent } from "./events/types.ts";
 
 /** Poll `predicate` until it holds or the timeout elapses. */
 async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
@@ -395,5 +395,195 @@ describe("IrcClient — SASL + P1 caps (M4)", () => {
     }
     expect(client.user("grace")?.account).toBe("graceAcct");
     client.quit();
+  });
+});
+
+describe("IrcClient — unified facade + actions (M5)", () => {
+  test("top-level on() observes both lifecycle and protocol events", async () => {
+    const mock = new MockTransport();
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps: [],
+      floodDelayMs: 0,
+    });
+    const registeredNicks: string[] = [];
+    const lifecycleTypes: string[] = [];
+    const privmsgs: string[] = [];
+    // Attach before connect so the lifecycle events aren't missed (no replay).
+    client.on("connecting", (e) => lifecycleTypes.push(e.type));
+    client.on("registered", (e) => registeredNicks.push(e.nick)); // narrows to RegisteredEvent
+    client.on("privmsg", (e) => privmsgs.push(e.text)); // narrows to PrivmsgEvent
+
+    const connected = client.connect();
+    await waitFor(() => mock.written.some((l) => l.startsWith("USER")));
+    mock.receiveLine(":irc 001 mojo :Welcome");
+    await connected;
+    expect(registeredNicks).toEqual(["mojo"]);
+    expect(lifecycleTypes).toEqual(["connecting"]);
+
+    mock.receiveLine(":alice!a@h PRIVMSG mojo :hey");
+    await waitFor(() => privmsgs.length > 0);
+    expect(privmsgs).toEqual(["hey"]);
+    client.quit();
+  });
+
+  test("clientEvents$ carries protocol and lifecycle events together", async () => {
+    const mock = new MockTransport();
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps: [],
+      floodDelayMs: 0,
+    });
+    const types: ClientEvent["type"][] = [];
+    client.clientEvents$.subscribe((e) => types.push(e.type));
+
+    const connected = client.connect();
+    await waitFor(() => mock.written.some((l) => l.startsWith("USER")));
+    mock.receiveLine(":irc 001 mojo :Welcome");
+    await connected;
+    mock.receiveLine(":alice!a@h PRIVMSG mojo :hi");
+    await waitFor(() => types.includes("privmsg"));
+
+    expect(types).toContain("connecting");
+    expect(types).toContain("connected");
+    expect(types).toContain("registered");
+    expect(types).toContain("privmsg");
+    client.quit();
+  });
+
+  test("dual-surface parity: one PRIVMSG reaches channel, user, and client.on()", async () => {
+    const { client, mock } = await registerClient();
+    mock.receiveLine(":irc 005 mojo PREFIX=(ov)@+ CHANTYPES=# :are supported");
+    mock.receiveLine(":mojo!u@h JOIN #mojo2");
+    mock.receiveLine(":alice!a@h JOIN #mojo2");
+    await waitFor(() => client.channel("#mojo2")?.members.has("alice") === true);
+
+    const chan = client.channel("#mojo2")!;
+    const user = client.user("alice")!;
+    const fromChannel: string[] = [];
+    const fromUser: string[] = [];
+    const fromClient: string[] = [];
+    chan.messages$.subscribe((e) => fromChannel.push(e.text));
+    user.messages$.subscribe((e) => fromUser.push(e.text));
+    client.on("privmsg", (e) => fromClient.push(e.text));
+
+    mock.receiveLine(":alice!a@h PRIVMSG #mojo2 :parity");
+    await waitFor(() => fromClient.length > 0);
+    expect(fromChannel).toEqual(["parity"]);
+    expect(fromUser).toEqual(["parity"]);
+    expect(fromClient).toEqual(["parity"]);
+    client.quit();
+  });
+
+  test("once() fires a single time; off() removes a handler by reference", async () => {
+    const { client, mock } = await registerClient();
+    const onceSeen: string[] = [];
+    const onSeen: string[] = [];
+    const handler = (e: PrivmsgEvent): void => void onSeen.push(e.text);
+    client.once("privmsg", (e) => onceSeen.push(e.text));
+    client.on("privmsg", handler);
+
+    // messages$ emits before events$ for the same line, so when "two" lands on
+    // messages$ the dispatch+facade for it has already run synchronously.
+    const rawTexts: string[] = [];
+    client.messages$.subscribe((m) => {
+      if (m.command === "PRIVMSG") rawTexts.push(m.params[1]!);
+    });
+
+    mock.receiveLine(":a!a@h PRIVMSG mojo :one");
+    await waitFor(() => rawTexts.includes("one"));
+    client.off("privmsg", handler);
+    mock.receiveLine(":a!a@h PRIVMSG mojo :two");
+    await waitFor(() => rawTexts.includes("two"));
+
+    expect(onceSeen).toEqual(["one"]); // once: only the first
+    expect(onSeen).toEqual(["one"]); // off removed it before "two"
+    client.quit();
+  });
+
+  test("action methods send the right wire commands through the queue", async () => {
+    const { client, mock } = await registerClient();
+    client.say("#chan", "hello there");
+    client.notice("bob", "heads up");
+    client.action("#chan", "waves");
+    client.join("#chan", "key");
+    client.part("#chan", "bye now");
+    client.kick("#chan", "bob", "go away");
+    client.setNick("mojo2");
+    client.mode("#chan", "+o", "bob");
+    client.topic("#chan", "new topic");
+    client.invite("bob", "#chan");
+    client.whois("bob");
+    client.who("#chan");
+    client.names("#chan");
+    client.away("be right back");
+    client.raw("CUSTOM", "a", "b");
+
+    await waitFor(() => mock.written.includes("CUSTOM a b\r\n"));
+    expect(mock.written).toContain("PRIVMSG #chan :hello there\r\n");
+    expect(mock.written).toContain("NOTICE bob :heads up\r\n");
+    expect(mock.written).toContain("PRIVMSG #chan :\x01ACTION waves\x01\r\n");
+    expect(mock.written).toContain("JOIN #chan key\r\n");
+    expect(mock.written).toContain("PART #chan :bye now\r\n");
+    expect(mock.written).toContain("KICK #chan bob :go away\r\n");
+    expect(mock.written).toContain("NICK mojo2\r\n");
+    expect(mock.written).toContain("MODE #chan +o bob\r\n");
+    expect(mock.written).toContain("TOPIC #chan :new topic\r\n");
+    expect(mock.written).toContain("INVITE bob #chan\r\n");
+    expect(mock.written).toContain("WHOIS bob\r\n");
+    expect(mock.written).toContain("WHO #chan\r\n");
+    expect(mock.written).toContain("NAMES #chan\r\n");
+    expect(mock.written).toContain("AWAY :be right back\r\n");
+    client.quit();
+  });
+
+  test("actions are a no-op before connect (no active queue)", () => {
+    const mock = new MockTransport();
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps: [],
+      floodDelayMs: 0,
+    });
+    client.say("#x", "early"); // before connect()
+    expect(mock.written).toEqual([]);
+  });
+
+  test("quit() completes clientEvents$ and disposes on() handlers (no leak)", async () => {
+    const { client, mock } = await registerClient();
+    let completed = false;
+    client.clientEvents$.subscribe({ complete: () => (completed = true) });
+    const seen: string[] = [];
+    client.on("privmsg", (e) => seen.push(e.text));
+
+    mock.receiveLine(":a!a@h PRIVMSG mojo :before");
+    await waitFor(() => seen.length === 1);
+
+    client.quit();
+    expect(completed).toBe(true); // merged firehose completes when its sources do
+    expect(seen).toEqual(["before"]); // facade listeners disposed; nothing more arrives
+  });
+
+  test("on()/once() after quit() are safe no-ops (no retained listeners)", async () => {
+    const { client } = await registerClient();
+    client.quit();
+    // The merged stream is already completed; registering must not throw, must
+    // never fire, and must not retain the handler (subscription closes on subscribe).
+    const seen: string[] = [];
+    const unsubOn = client.on("privmsg", (e) => seen.push(e.text));
+    const unsubOnce = client.once("registered", () => seen.push("registered"));
+    expect(() => {
+      unsubOn();
+      unsubOnce();
+    }).not.toThrow();
+    expect(seen).toEqual([]);
   });
 });

@@ -69,3 +69,85 @@ export function ping(token: string): Message {
 export function quit(reason: string): Message {
   return command("QUIT", reason);
 }
+
+// ---- Client actions (M5) ----
+//
+// One builder per user-facing action. Optional params are omitted from the wire
+// form when not supplied (so e.g. `topic("#x")` queries, while `topic("#x", "")`
+// clears). The serializer decides trailing-param framing; these only shape params.
+
+/** Byte that frames a CTCP payload (e.g. `ACTION`). */
+const CTCP = "\x01";
+
+/** `PRIVMSG <target> :<text>` — a message to a channel or user. */
+export function privmsg(target: string, text: string): Message {
+  return command("PRIVMSG", target, text);
+}
+
+/** `NOTICE <target> :<text>` — a notice (no automated replies expected). */
+export function notice(target: string, text: string): Message {
+  return command("NOTICE", target, text);
+}
+
+/** CTCP `ACTION` (`/me`): `PRIVMSG <target> :\x01ACTION <text>\x01`. */
+export function action(target: string, text: string): Message {
+  return command("PRIVMSG", target, `${CTCP}ACTION ${text}${CTCP}`);
+}
+
+/** `JOIN <channel>`, or `JOIN <channel> <key>` for a keyed channel. */
+export function join(channel: string, key?: string): Message {
+  return key === undefined ? command("JOIN", channel) : command("JOIN", channel, key);
+}
+
+/** `PART <channel>`, optionally with a `:<reason>`. */
+export function part(channel: string, reason?: string): Message {
+  return reason === undefined ? command("PART", channel) : command("PART", channel, reason);
+}
+
+/** `KICK <channel> <nick>`, optionally with a `:<reason>`. */
+export function kick(channel: string, nick: string, reason?: string): Message {
+  return reason === undefined
+    ? command("KICK", channel, nick)
+    : command("KICK", channel, nick, reason);
+}
+
+/**
+ * `MODE <target> [<modes> [params...]]`. With no `modes` it queries the target's
+ * current modes; otherwise it applies `modes` with any positional params.
+ */
+export function mode(target: string, modes?: string, ...params: string[]): Message {
+  return modes === undefined ? command("MODE", target) : command("MODE", target, modes, ...params);
+}
+
+/**
+ * `TOPIC <channel>` to query, or `TOPIC <channel> :<topic>` to set it. Passing an
+ * empty string clears the topic (a distinct action from querying).
+ */
+export function topic(channel: string, newTopic?: string): Message {
+  return newTopic === undefined ? command("TOPIC", channel) : command("TOPIC", channel, newTopic);
+}
+
+/** `INVITE <nick> <channel>`. */
+export function invite(nick: string, channel: string): Message {
+  return command("INVITE", nick, channel);
+}
+
+/** `WHOIS <target>` — request detailed info about a nick. */
+export function whois(target: string): Message {
+  return command("WHOIS", target);
+}
+
+/** `WHO <mask>` — request a listing for a channel or user mask. */
+export function who(mask: string): Message {
+  return command("WHO", mask);
+}
+
+/** `NAMES <channel>` — request a channel's member list. */
+export function names(channel: string): Message {
+  return command("NAMES", channel);
+}
+
+/** `AWAY :<reason>` to set away status, or bare `AWAY` to clear it. */
+export function away(reason?: string): Message {
+  return reason === undefined ? command("AWAY") : command("AWAY", reason);
+}

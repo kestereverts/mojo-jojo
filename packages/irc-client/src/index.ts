@@ -5,7 +5,8 @@
 // flood-controlled outbound queue, and exponential-backoff reconnection. M3 adds
 // live state tracking (casemapping, ISUPPORT, entities) and the entity-resolved
 // event taxonomy. M4 adds SASL (PLAIN/EXTERNAL) and the `account-notify`
-// dynamic. The unified `.on()` facade arrives in M5.
+// dynamic. M5 adds the action methods, the `MemberList.by` index sugar, and the
+// unified `ClientEvent` surface + top-level `.on()`/`once()`/`off()` facade.
 
 // High-level facade
 export { IrcClient, type ClientState, type IrcClientInternals } from "./IrcClient.ts";
@@ -21,10 +22,11 @@ export {
 } from "./options.ts";
 export type { LifecycleEvent } from "./events/lifecycle.ts";
 
-// Entity-resolved event taxonomy (M3)
+// Entity-resolved event taxonomy (M3); ClientEvent unifies it with lifecycle (M5)
 export type {
   BaseEvent,
   IrcEvent,
+  ClientEvent,
   UserEvent,
   ChannelEvent,
   PrivmsgEvent,
@@ -48,7 +50,7 @@ export { Server } from "./entities/Server.ts";
 export { Channel } from "./entities/Channel.ts";
 export { User } from "./entities/User.ts";
 export { Member } from "./entities/Member.ts";
-export { MemberList } from "./entities/MemberList.ts";
+export { MemberList, type MembersByNick } from "./entities/MemberList.ts";
 
 // State store + dispatch (M3)
 export { StateStore } from "./state/StateStore.ts";

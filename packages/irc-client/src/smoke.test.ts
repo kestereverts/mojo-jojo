@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test";
-import type { Message } from "@mojo-jojo/irc-message";
 import { IrcClient } from "./IrcClient.ts";
 import type { IrcEvent } from "./events/types.ts";
 
@@ -32,14 +31,6 @@ async function waitFor(predicate: () => boolean, timeoutMs: number, label: strin
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
-
-/** Build a bare client->server message (no actions API until M5). */
-const raw = (command: string, ...params: string[]): Message => ({
-  tags: {},
-  source: null,
-  command,
-  params,
-});
 
 const suite = SMOKE ? describe : describe.skip;
 
@@ -85,8 +76,8 @@ suite("live smoke: irc-client end-to-end (IRC_SMOKE=1)", () => {
           console.log(`[smoke] SASL account=${client.user(nick)?.account}`);
         }
 
-        // Join the channel; wait for membership + NAMES to populate.
-        client.send(raw("JOIN", CHANNEL));
+        // Join the channel; wait for membership + NAMES to populate (M5 action API).
+        client.join(CHANNEL);
         await waitFor(() => (client.channel(CHANNEL)?.members.size ?? 0) >= 1, 20000, "JOIN + NAMES");
         const channel = client.channel(CHANNEL)!;
         expect(channel.members.has(nick)).toBe(true);
@@ -95,8 +86,8 @@ suite("live smoke: irc-client end-to-end (IRC_SMOKE=1)", () => {
         );
 
         // Send a message; with echo-message, confirm it round-trips back to us.
-        const marker = `mojo-jojo M4 smoke ${Date.now()}`;
-        client.send(raw("PRIVMSG", CHANNEL, marker));
+        const marker = `mojo-jojo M5 smoke ${Date.now()}`;
+        client.say(CHANNEL, marker);
         if (client.enabledCaps.has("echo-message")) {
           await waitFor(
             () => events.some((e) => e.type === "privmsg" && e.text === marker && e.user.isSelf),

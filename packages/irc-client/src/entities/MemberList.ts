@@ -3,13 +3,28 @@ import { IrcMap } from "../casemapping/IrcMap.ts";
 import type { Member } from "./Member.ts";
 
 /**
+ * A case-insensitive index of members by nick, reviving the classic Mojo
+ * `channel.users["nick"]` ergonomics (design decision #4). Returned by
+ * {@link MemberList.by}; reads fall through to the underlying
+ * {@link MemberList.get}, so `list.by["Alice"]` honours the active casemapping
+ * and yields `undefined` for absent nicks. Read-only.
+ */
+export type MembersByNick = { readonly [nick: string]: Member | undefined };
+
+/**
  * The members of one channel, keyed case-insensitively by nick. The type-safe
  * primary API is {@link get}/{@link has}/iteration; the ergonomic
- * `users["nick"]` Proxy sugar (per the design's decision #4) is layered on in
- * M5. Mutated only by the StateStore via the `@internal` methods.
+ * `list.by["nick"]` Proxy sugar (per the design's decision #4) is exposed via
+ * {@link by}. Mutated only by the StateStore via the `@internal` methods.
+ *
+ * The Proxy sugar lives behind {@link by} (rather than making the class itself
+ * indexable) on purpose: a member whose nick collides with a method name
+ * (`get`, `has`, `size`, … all valid IRC nicks) must never shadow or be shadowed
+ * by the API, so the lookup surface is kept separate from the method surface.
  */
 export class MemberList implements Iterable<Member> {
   readonly #members: IrcMap<Member>;
+  #by: MembersByNick | null = null;
 
   constructor(mapper: CaseMapper) {
     this.#members = new IrcMap<Member>(mapper);
@@ -17,6 +32,35 @@ export class MemberList implements Iterable<Member> {
 
   get size(): number {
     return this.#members.size;
+  }
+
+  /**
+   * Proxy view giving `list.by["nick"]` / `list.by.nick` index access (and
+   * `"nick" in list.by`, `Object.keys(list.by)`). Lazily created and memoized;
+   * lookups delegate to {@link get}, so casemapping and live membership apply.
+   */
+  get by(): MembersByNick {
+    if (this.#by === null) {
+      const members = this.#members;
+      this.#by = new Proxy(Object.create(null) as MembersByNick, {
+        get: (_target, prop) => (typeof prop === "string" ? members.get(prop) : undefined),
+        has: (_target, prop) => typeof prop === "string" && members.has(prop),
+        ownKeys: () => [...members.keys()],
+        getOwnPropertyDescriptor: (_target, prop) =>
+          typeof prop === "string" && members.has(prop)
+            ? { enumerable: true, configurable: true, value: members.get(prop) }
+            : undefined,
+        // Read-only + always-extensible: reject every mutation/lock. Without the
+        // `preventExtensions` guard a caller could freeze the (empty) target,
+        // after which `ownKeys` returning virtual member keys violates the Proxy
+        // invariant and throws TypeError. Returning false fails the operation.
+        set: () => false,
+        defineProperty: () => false,
+        deleteProperty: () => false,
+        preventExtensions: () => false,
+      });
+    }
+    return this.#by;
   }
 
   get(nick: string): Member | undefined {
