@@ -14,6 +14,7 @@ import { OutboundQueue } from "./pipeline/outbound.ts";
 import {
   action as actionCommand,
   away as awayCommand,
+  capReq,
   command as rawCommand,
   invite as inviteCommand,
   join as joinCommand,
@@ -31,7 +32,13 @@ import {
   whois as whoisCommand,
 } from "./protocol/commands.ts";
 import { register, type RegistrationOptions } from "./protocol/registration.ts";
-import type { CapabilityStore } from "./protocol/capabilities.ts";
+import {
+  chunkCaps,
+  parseCapMessage,
+  reconcileCaps,
+  type CapabilityStore,
+} from "./protocol/capabilities.ts";
+import { capEvent } from "./events/factory.ts";
 import { retryWithBackoff, type BackoffDeps } from "./reconnect.ts";
 import { resolveOptions, type IrcClientOptions, type ResolvedOptions } from "./options.ts";
 import type { Transport } from "./transport/Transport.ts";
@@ -158,10 +165,11 @@ export class IrcClient {
   }
 
   /**
-   * Stable, entity-resolved protocol event stream (the firehose). Survives
-   * reconnects and completes on {@link quit}. For the combined protocol +
-   * lifecycle surface, use {@link clientEvents$} or the {@link on} facade;
-   * per-entity streams are on the entities returned by {@link channel}/{@link user}.
+   * Stable protocol event stream (the firehose) — entity-resolved events plus
+   * connection-scoped ones (`cap`/`batch`/`standardReply`). Survives reconnects
+   * and completes on {@link quit}. For the combined protocol + lifecycle surface,
+   * use {@link clientEvents$} or the {@link on} facade; per-entity streams are on
+   * the entities returned by {@link channel}/{@link user}.
    */
   get events$(): Observable<IrcEvent> {
     return this.#events.asObservable();
@@ -250,6 +258,15 @@ export class IrcClient {
         takeUntil(this.#teardown),
       )
       .subscribe((message) => this.#queue?.sendImmediate(pong(message.params[0] ?? "")));
+
+    // Long-lived cap-notify handler: keep enabled/available caps current as
+    // `CAP NEW`/`CAP DEL` (and post-`NEW` `ACK`s) arrive after registration.
+    this.#messages
+      .pipe(
+        filter((message) => message.command === "CAP"),
+        takeUntil(this.#teardown),
+      )
+      .subscribe((message) => this.#handleCapNotify(message));
 
     const connection$ = defer(() => this.#runAttempt()).pipe(
       retryWithBackoff<void>(this.#options.reconnect, {
@@ -529,6 +546,80 @@ export class IrcClient {
 
   #emit(event: LifecycleEvent): void {
     this.#lifecycle.next(event);
+  }
+
+  /**
+   * Apply a post-registration `CAP` message (the `cap-notify` extension). During
+   * registration `#capabilities` is still null and `registration.ts` owns the
+   * `CAP` exchange, so this no-ops until the connection's caps are established.
+   *
+   * `NEW` records newly-advertised caps and requests any we want that aren't yet
+   * enabled; `DEL` drops caps (also disabling them — closing the stale-`enabledCaps`
+   * window for guards like {@link sendLabeled}); `ACK` enables what we requested
+   * after a `NEW`. Each change mirrors onto `server.caps` and emits a `CapEvent`.
+   */
+  #handleCapNotify(message: Message): void {
+    const caps = this.#capabilities;
+    if (caps === null) return; // registration in progress — not our concern yet
+    const parsed = parseCapMessage(message);
+    if (parsed === null) return;
+
+    switch (parsed.subcommand) {
+      case "NEW": {
+        caps.addAvailable(parsed.tokens);
+        // Request only the caps announced in THIS NEW that we want and don't yet
+        // have — never the whole desired-but-unenabled backlog (which would
+        // re-request caps the server already NAKed and could overflow the line
+        // limit). Chunk to stay under it, mirroring the registration handshake.
+        const want = this.#wantedFromTokens(parsed.tokens);
+        for (const chunk of chunkCaps(want)) this.#queue?.sendImmediate(capReq(chunk));
+        break;
+      }
+      case "DEL":
+        caps.removeAvailable(parsed.tokens);
+        break;
+      case "ACK":
+        caps.applyAck(parsed.tokens);
+        break;
+      default:
+        return; // LS / LIST / NAK after registration: nothing to apply
+    }
+
+    this.#store?.server.setCaps(caps.enabled);
+    this.#events.next(
+      capEvent(message, {
+        subcommand: parsed.subcommand,
+        caps: parsed.tokens.map((token) => token.name),
+        enabled: caps.enabled,
+      }),
+    );
+  }
+
+  /**
+   * From the caps a single `CAP NEW` announced, the subset we want and don't yet
+   * have enabled — i.e. what to `CAP REQ` in response. Scoped to this NEW's
+   * tokens (not the whole desired set) so we never re-request caps the server
+   * already refused. `sasl` is excluded: re-running SASL mid-session is out of
+   * scope.
+   *
+   * Dependencies are then resolved against what's advertised, but only for the
+   * caps this NEW announced — so e.g. a `CAP NEW :labeled-response` also pulls in
+   * `batch` (its dependency) if advertised, exactly like the registration path,
+   * without dragging in the unrelated desired-but-refused backlog. Bounded by the
+   * announced set plus its dependencies; the caller chunks the result.
+   */
+  #wantedFromTokens(tokens: readonly { name: string; disabled: boolean }[]): string[] {
+    const caps = this.#capabilities;
+    if (caps === null) return [];
+    const desired = this.#options.caps;
+    const announced: string[] = [];
+    for (const token of tokens) {
+      if (token.disabled || token.name === "sasl") continue;
+      if (caps.isEnabled(token.name)) continue;
+      if (desired === "all" || desired.includes(token.name)) announced.push(token.name);
+    }
+    if (announced.length === 0) return [];
+    return reconcileCaps(announced, caps.available, false).filter((cap) => !caps.isEnabled(cap));
   }
 
   #registrationOptions(): RegistrationOptions {

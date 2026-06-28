@@ -5,6 +5,7 @@ import type {
   AwayEvent,
   BaseEvent,
   BatchEvent,
+  CapEvent,
   ChghostEvent,
   JoinEvent,
   KickEvent,
@@ -113,4 +114,8 @@ export function standardReplyEvent(
   fields: Fields<StandardReplyEvent>,
 ): StandardReplyEvent {
   return { type: "standardReply", ...baseEvent(message), ...fields };
+}
+
+export function capEvent(message: Message, fields: Fields<CapEvent>): CapEvent {
+  return { type: "cap", ...baseEvent(message), ...fields };
 }

@@ -2,6 +2,7 @@ import { Subject, takeUntil, timer, type Observable } from "rxjs";
 import type { Message } from "@mojo-jojo/irc-message";
 import {
   CapabilityStore,
+  chunkCaps,
   parseCapMessage,
   reconcileCaps,
   type CapMessage,
@@ -76,27 +77,6 @@ export interface RegistrationDeps {
   readonly messages$: Observable<Message>;
   /** Priority send (bypasses the flood queue) used for all handshake traffic. */
   readonly send: (message: Message) => void;
-}
-
-/** Keep each `CAP REQ` line comfortably under the 512-byte message limit. */
-const MAX_CAP_REQ_LEN = 400;
-
-/** Split a capability request into chunks whose joined length stays bounded. */
-function chunkCaps(caps: readonly string[]): string[][] {
-  const chunks: string[][] = [];
-  let current: string[] = [];
-  let length = 0;
-  for (const cap of caps) {
-    if (current.length > 0 && length + 1 + cap.length > MAX_CAP_REQ_LEN) {
-      chunks.push(current);
-      current = [];
-      length = 0;
-    }
-    length += current.length === 0 ? cap.length : 1 + cap.length;
-    current.push(cap);
-  }
-  if (current.length > 0) chunks.push(current);
-  return chunks;
 }
 
 /**

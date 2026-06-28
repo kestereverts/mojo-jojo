@@ -233,6 +233,20 @@ export interface StandardReplyEvent extends BaseEvent {
   readonly text: string;
 }
 
+/**
+ * A runtime capability change via `cap-notify` (`CAP NEW`/`CAP DEL`), or an
+ * `ACK` for a cap we requested after a `NEW`. Firehose-only (connection-level).
+ */
+export interface CapEvent extends BaseEvent {
+  readonly type: "cap";
+  /** The subcommand that triggered this change. */
+  readonly subcommand: "NEW" | "DEL" | "ACK";
+  /** The affected capability names. */
+  readonly caps: readonly string[];
+  /** Capabilities enabled on the connection after applying this change. */
+  readonly enabled: ReadonlySet<string>;
+}
+
 /** Discriminated union of every entity-resolved protocol event (M3 + M4 + M6). */
 export type IrcEvent =
   | PrivmsgEvent
@@ -251,7 +265,8 @@ export type IrcEvent =
   | TopicEvent
   | NamesEvent
   | BatchEvent
-  | StandardReplyEvent;
+  | StandardReplyEvent
+  | CapEvent;
 
 /** The events routed into a {@link User}'s per-entity stream. */
 export type UserEvent =

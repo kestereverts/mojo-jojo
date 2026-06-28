@@ -49,6 +49,7 @@ export type {
   NamesEvent,
   BatchEvent,
   StandardReplyEvent,
+  CapEvent,
 } from "./events/types.ts";
 export * as eventFactory from "./events/factory.ts";
 

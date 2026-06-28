@@ -779,3 +779,173 @@ describe("IrcClient — labeled-response + chathistory (M6)", () => {
     client.quit();
   });
 });
+
+describe("IrcClient — cap-notify (CAP NEW/DEL)", () => {
+  /** Connect and negotiate an initial cap set (advertised == requested). */
+  async function negotiate(
+    optionCaps: string[],
+    advertised: string[],
+  ): Promise<{ client: IrcClient; mock: MockTransport }> {
+    const mock = new MockTransport();
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps: optionCaps,
+      floodDelayMs: 0,
+    });
+    const connected = client.connect();
+    await waitFor(() => mock.written.some((l) => l.startsWith("USER")));
+    mock.receiveLine(`:irc CAP * LS :${advertised.join(" ")}`);
+    await waitFor(() => mock.written.some((l) => l.startsWith("CAP REQ")));
+    // ACK exactly what we requested.
+    const reqLine = mock.written.find((l) => l.startsWith("CAP REQ"))!;
+    const acked = reqLine.replace("CAP REQ :", "").trim();
+    mock.receiveLine(`:irc CAP mojo ACK :${acked}`);
+    await waitFor(() => mock.written.includes("CAP END\r\n"));
+    mock.receiveLine(":irc 001 mojo :hi");
+    await connected;
+    return { client, mock };
+  }
+
+  test("CAP DEL disables a cap, mirrors to server.caps, and emits a cap event", async () => {
+    const { client, mock } = await negotiate(
+      ["labeled-response", "batch", "away-notify"],
+      ["labeled-response", "batch", "away-notify"],
+    );
+    const capEvents: Extract<ClientEvent, { type: "cap" }>[] = [];
+    client.on("cap", (e) => capEvents.push(e));
+    expect(client.enabledCaps.has("labeled-response")).toBe(true);
+
+    mock.receiveLine(":irc CAP mojo DEL :labeled-response");
+    await waitFor(() => !client.enabledCaps.has("labeled-response"));
+    expect(client.server?.caps.has("labeled-response")).toBe(false);
+    expect(
+      capEvents.some((e) => e.subcommand === "DEL" && e.caps.includes("labeled-response")),
+    ).toBe(true);
+
+    // The guard now sees the cap is gone, so sendLabeled refuses.
+    let error: unknown;
+    await client
+      .sendLabeled({ tags: {}, source: null, command: "AWAY", params: ["x"] })
+      .catch((e: unknown) => {
+        error = e;
+      });
+    expect((error as Error).message).toContain("labeled-response");
+    client.quit();
+  });
+
+  test("CAP NEW auto-requests a wanted cap and ACK enables it (with deps)", async () => {
+    // Want labeled-response+batch, but the server only advertises away-notify at first.
+    const { client, mock } = await negotiate(
+      ["away-notify", "labeled-response", "batch"],
+      ["away-notify"],
+    );
+    expect(client.enabledCaps.has("away-notify")).toBe(true);
+    expect(client.enabledCaps.has("labeled-response")).toBe(false);
+
+    // Server advertises the new caps; the client should auto-REQ what it wants.
+    mock.receiveLine(":irc CAP mojo NEW :labeled-response batch");
+    await waitFor(() =>
+      mock.written.some((l) => l.startsWith("CAP REQ") && l.includes("labeled-response")),
+    );
+
+    mock.receiveLine(":irc CAP mojo ACK :labeled-response batch");
+    await waitFor(() => client.enabledCaps.has("labeled-response"));
+    expect(client.enabledCaps.has("batch")).toBe(true);
+    expect(client.server?.caps.has("labeled-response")).toBe(true);
+    client.quit();
+  });
+
+  test("CAP NEW chunks a large auto-request under the IRC line limit", async () => {
+    const mock = new MockTransport();
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps: "all", // want everything advertised
+      floodDelayMs: 0,
+    });
+    const connected = client.connect();
+    await waitFor(() => mock.written.some((l) => l.startsWith("USER")));
+    mock.receiveLine(":irc CAP * LS :away-notify");
+    await waitFor(() => mock.written.some((l) => l.startsWith("CAP REQ")));
+    mock.receiveLine(":irc CAP mojo ACK :away-notify");
+    await waitFor(() => mock.written.includes("CAP END\r\n"));
+    mock.receiveLine(":irc 001 mojo :hi");
+    await connected;
+
+    const before = mock.written.length;
+    // 24 caps × 16 chars = 407 chars of names: the inbound NEW stays under the
+    // 510-byte parse limit, but the outbound CAP REQ would exceed MAX_CAP_REQ_LEN
+    // (400) if sent as one line — so it must be split into multiple CAP REQ lines.
+    const many = Array.from({ length: 24 }, (_, i) => `cap${i}`.padEnd(16, "x"));
+    mock.receiveLine(`:irc CAP mojo NEW :${many.join(" ")}`);
+    await waitFor(() => mock.written.slice(before).some((l) => l.startsWith("CAP REQ")));
+
+    const reqs = mock.written.slice(before).filter((l) => l.startsWith("CAP REQ"));
+    expect(reqs.length).toBeGreaterThan(1); // split across chunks
+    for (const line of reqs) expect(line.length).toBeLessThanOrEqual(512); // never overlong
+    const all = reqs.join(" ");
+    for (const cap of many) expect(all).toContain(cap); // every cap still requested
+    client.quit();
+  });
+
+  test("CAP NEW only requests the caps it announced that we want (no backlog)", async () => {
+    // Want labeled-response, but the server only advertises away-notify initially.
+    const { client, mock } = await negotiate(
+      ["away-notify", "labeled-response", "batch"],
+      ["away-notify"],
+    );
+
+    // A NEW for a cap we don't want triggers no request.
+    let before = mock.written.length;
+    mock.receiveLine(":irc CAP mojo NEW :some-unwanted-cap");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(mock.written.slice(before).some((l) => l.startsWith("CAP REQ"))).toBe(false);
+
+    // A NEW for a wanted cap requests exactly that — not the whole desired set.
+    before = mock.written.length;
+    mock.receiveLine(":irc CAP mojo NEW :labeled-response");
+    await waitFor(() => mock.written.slice(before).some((l) => l.startsWith("CAP REQ")));
+    const req = mock.written.slice(before).find((l) => l.startsWith("CAP REQ"))!;
+    expect(req).toContain("labeled-response");
+    expect(req).not.toContain("some-unwanted-cap");
+    client.quit();
+  });
+
+  test("CAP NEW pulls in a dependency advertised earlier but not enabled", async () => {
+    // Want labeled-response; at registration the server advertised only `batch`,
+    // so nothing was requested. A later NEW for labeled-response must request its
+    // `batch` dependency too (matching registration's dependency reconciliation).
+    const mock = new MockTransport();
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps: ["labeled-response"],
+      floodDelayMs: 0,
+    });
+    const connected = client.connect();
+    await waitFor(() => mock.written.some((l) => l.startsWith("USER")));
+    mock.receiveLine(":irc CAP * LS :batch"); // labeled-response not yet offered
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    mock.receiveLine(":irc 001 mojo :hi"); // 001 concludes registration
+    await connected;
+    expect(client.enabledCaps.has("labeled-response")).toBe(false);
+
+    const before = mock.written.length;
+    mock.receiveLine(":irc CAP mojo NEW :labeled-response");
+    await waitFor(() => mock.written.slice(before).some((l) => l.startsWith("CAP REQ")));
+    const req = mock.written
+      .slice(before)
+      .filter((l) => l.startsWith("CAP REQ"))
+      .join(" ");
+    expect(req).toContain("labeled-response");
+    expect(req).toContain("batch"); // dependency pulled in
+    client.quit();
+  });
+});

@@ -143,6 +143,32 @@ export function reconcileCaps(
   return requested;
 }
 
+/** Keep each `CAP REQ` line comfortably under the 512-byte message limit. */
+export const MAX_CAP_REQ_LEN = 400;
+
+/**
+ * Split a capability request into chunks whose space-joined length stays under
+ * {@link MAX_CAP_REQ_LEN}, so a large set is sent as several `CAP REQ` lines
+ * rather than one overlong (and likely rejected) line. Shared by the
+ * registration handshake and the runtime `CAP NEW` path.
+ */
+export function chunkCaps(caps: readonly string[]): string[][] {
+  const chunks: string[][] = [];
+  let current: string[] = [];
+  let length = 0;
+  for (const cap of caps) {
+    if (current.length > 0 && length + 1 + cap.length > MAX_CAP_REQ_LEN) {
+      chunks.push(current);
+      current = [];
+      length = 0;
+    }
+    length += current.length === 0 ? cap.length : 1 + cap.length;
+    current.push(cap);
+  }
+  if (current.length > 0) chunks.push(current);
+  return chunks;
+}
+
 /**
  * Tracks the capabilities a connection advertises (`available`) and has enabled
  * (`enabled`). Lives for the duration of a connection so post-registration
