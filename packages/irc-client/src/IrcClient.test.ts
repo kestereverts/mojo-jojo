@@ -4,6 +4,7 @@ import { IrcClient } from "./IrcClient.ts";
 import { MockTransport } from "./transport/MockTransport.ts";
 import type { IrcClientOptions } from "./options.ts";
 import type { LifecycleEvent } from "./events/lifecycle.ts";
+import type { IrcEvent } from "./events/types.ts";
 
 /** Poll `predicate` until it holds or the timeout elapses. */
 async function waitFor(predicate: () => boolean, timeoutMs = 1000): Promise<void> {
@@ -70,6 +71,8 @@ describe("IrcClient", () => {
     expect(client.state).toBe("registered");
     expect(client.nick).toBe("mojo");
     expect([...client.enabledCaps].sort()).toEqual(["multi-prefix", "server-time"]);
+    // Caps are also mirrored onto the live server state (not just enabledCaps).
+    expect([...(client.server?.caps ?? [])].sort()).toEqual(["multi-prefix", "server-time"]);
     expect(events.map((e) => e.type)).toEqual(["connecting", "connected", "registered"]);
     client.quit();
   });
@@ -219,6 +222,90 @@ describe("IrcClient", () => {
       error = e;
     });
     expect((error as Error).message).toContain('state "registered"');
+    client.quit();
+  });
+});
+
+describe("IrcClient — state + events (M3)", () => {
+  test("tracks channel/member state and emits entity-resolved events", async () => {
+    const { client, mock } = await registerClient();
+    const events: IrcEvent[] = [];
+    client.events$.subscribe((e) => events.push(e));
+
+    mock.receiveLine(":irc 005 mojo PREFIX=(ov)@+ CHANTYPES=#& NETWORK=TestNet :are supported");
+    mock.receiveLine(":mojo!u@h JOIN #mojo2");
+    mock.receiveLine(":irc 353 mojo = #mojo2 :@alice mojo");
+    mock.receiveLine(":irc 366 mojo #mojo2 :End of NAMES");
+
+    await waitFor(() => client.channel("#mojo2")?.members.has("alice") === true);
+    const chan = client.channel("#mojo2")!;
+    expect(chan.members.get("alice")?.isOp()).toBe(true);
+    expect(client.server?.network).toBe("TestNet");
+    expect(client.channels?.size).toBe(1);
+
+    // A per-channel stream and the global firehose both see the message.
+    const channelTexts: string[] = [];
+    chan.messages$.subscribe((e) => channelTexts.push(e.text));
+    mock.receiveLine(":alice!a@h PRIVMSG #mojo2 :hi there");
+    await waitFor(() => events.some((e) => e.type === "privmsg"));
+
+    const pm = events.find((e) => e.type === "privmsg");
+    expect(pm?.type).toBe("privmsg");
+    if (pm?.type === "privmsg") {
+      expect(pm.channel?.name).toBe("#mojo2");
+      expect(pm.user.nick).toBe("alice");
+      expect(pm.member?.isOp()).toBe(true);
+    }
+    expect(channelTexts).toEqual(["hi there"]);
+    client.quit();
+  });
+
+  test("events$ completes on quit", async () => {
+    const { client } = await registerClient();
+    let completed = false;
+    client.events$.subscribe({ complete: () => (completed = true) });
+    client.quit();
+    expect(completed).toBe(true);
+  });
+
+  test("quit() completes per-entity streams (no dangling subscriptions)", async () => {
+    const { client, mock } = await registerClient();
+    mock.receiveLine(":mojo!u@h JOIN #mojo2");
+    await waitFor(() => client.channel("#mojo2") !== undefined);
+    let channelCompleted = false;
+    client.channel("#mojo2")!.messages$.subscribe({ complete: () => (channelCompleted = true) });
+    client.quit();
+    expect(channelCompleted).toBe(true);
+  });
+
+  test("an abnormal drop completes the previous connection's entity streams", async () => {
+    const mocks: MockTransport[] = [];
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => {
+        const m = new MockTransport();
+        mocks.push(m);
+        return m;
+      },
+      caps: [],
+      floodDelayMs: 0,
+      reconnect: { enabled: true, initialDelayMs: 1, factor: 1, jitter: false, maxDelayMs: 5 },
+    });
+    const connected = client.connect();
+    await waitFor(() => mocks.length === 1 && mocks[0]!.written.some((l) => l.startsWith("USER")));
+    mocks[0]!.receiveLine(":irc 001 mojo :hi");
+    await connected;
+    mocks[0]!.receiveLine(":mojo!u@h JOIN #mojo2");
+    await waitFor(() => client.channel("#mojo2") !== undefined);
+
+    let completed = false;
+    client.channel("#mojo2")!.messages$.subscribe({ complete: () => (completed = true) });
+    // Drop the connection: the old StateStore's entity streams must complete.
+    mocks[0]!.fail(new Error("reset"));
+    await waitFor(() => completed, 2000);
+    expect(completed).toBe(true);
     client.quit();
   });
 });

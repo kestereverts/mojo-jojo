@@ -17,6 +17,13 @@ import { retryWithBackoff, type BackoffDeps } from "./reconnect.ts";
 import { resolveOptions, type IrcClientOptions, type ResolvedOptions } from "./options.ts";
 import type { Transport } from "./transport/Transport.ts";
 import type { LifecycleEvent } from "./events/lifecycle.ts";
+import type { IrcEvent } from "./events/types.ts";
+import { StateStore } from "./state/StateStore.ts";
+import { Dispatcher } from "./state/dispatch.ts";
+import type { Server } from "./entities/Server.ts";
+import type { Channel } from "./entities/Channel.ts";
+import type { User } from "./entities/User.ts";
+import type { IrcMap } from "./casemapping/IrcMap.ts";
 
 /** Lifecycle state of an {@link IrcClient}. */
 export type ClientState = "idle" | "connecting" | "registered" | "closed";
@@ -27,6 +34,17 @@ export interface IrcClientInternals {
   readonly scheduler?: BackoffDeps["scheduler"];
   /** RNG for backoff jitter. */
   readonly random?: BackoffDeps["random"];
+  /**
+   * Invoked when a dispatch handler throws (a client-internal bug). The
+   * connection is unaffected — the raw message still flows on `messages$`.
+   * Defaults to {@link defaultDispatchErrorHandler} (a `console.error`).
+   */
+  readonly onDispatchError?: (error: unknown, message: Message) => void;
+}
+
+/** Default sink for dispatch faults: log them so they aren't silently lost. */
+function defaultDispatchErrorHandler(error: unknown, message: Message): void {
+  console.error(`[irc-client] dispatch failed for ${message.command}:`, error);
 }
 
 /**
@@ -35,12 +53,15 @@ export interface IrcClientInternals {
  *
  * M2 surface: {@link connect}/{@link quit} lifecycle, a stable public
  * {@link messages$} inbound stream and {@link lifecycle$} connection stream,
- * automatic `PING`→`PONG`, and exponential-backoff reconnection. State entities,
- * the rich event taxonomy, and the `.on()` facade arrive in M3/M5.
+ * automatic `PING`→`PONG`, and exponential-backoff reconnection. M3 adds live
+ * state ({@link server}/{@link channels}/{@link users}/{@link channel}/
+ * {@link user}) and the entity-resolved {@link events$} firehose; the unified
+ * `.on()` facade arrives in M5.
  *
- * `messages$` and `lifecycle$` are stable across reconnects — they are owned
- * Subjects the per-attempt pipeline feeds into, so subscribers attached once
- * survive transport churn and only complete on {@link quit}.
+ * `messages$`, `events$`, and `lifecycle$` are stable across reconnects — they
+ * are owned Subjects the per-attempt pipeline feeds into, so subscribers
+ * attached once survive transport churn and only complete on {@link quit}. The
+ * {@link server} state, by contrast, is rebuilt per connection.
  */
 export class IrcClient {
   readonly #options: ResolvedOptions;
@@ -48,6 +69,8 @@ export class IrcClient {
 
   /** Public, reconnect-stable inbound message stream. */
   readonly #messages = new Subject<Message>();
+  /** Public, reconnect-stable entity-resolved event stream (M3). */
+  readonly #events = new Subject<IrcEvent>();
   /** Public connection lifecycle stream. */
   readonly #lifecycle = new Subject<LifecycleEvent>();
   /** Fires once on {@link quit} to tear down every long-lived subscription. */
@@ -57,6 +80,8 @@ export class IrcClient {
   #transport: Transport | null = null;
   #queue: OutboundQueue | null = null;
   #capabilities: CapabilityStore | null = null;
+  /** Live connection state, rebuilt per attempt (fresh on each reconnect). */
+  #store: StateStore | null = null;
   #nick: string;
   #state: ClientState = "idle";
   #attemptCount = 0;
@@ -90,6 +115,41 @@ export class IrcClient {
   /** Connection lifecycle stream; completes on {@link quit}. */
   get lifecycle$(): Observable<LifecycleEvent> {
     return this.#lifecycle.asObservable();
+  }
+
+  /**
+   * Stable, entity-resolved protocol event stream (the firehose). Survives
+   * reconnects and completes on {@link quit}. The unified `ClientEvent` surface
+   * and the top-level `.on()` facade arrive in M5; per-entity streams are on the
+   * entities returned by {@link channel}/{@link user}.
+   */
+  get events$(): Observable<IrcEvent> {
+    return this.#events.asObservable();
+  }
+
+  /** The live server-state aggregate for the current connection, or `null`. */
+  get server(): Server | null {
+    return this.#store?.server ?? null;
+  }
+
+  /** Case-insensitive map of joined channels, or `undefined` before connecting. */
+  get channels(): IrcMap<Channel> | undefined {
+    return this.#store?.server.channels;
+  }
+
+  /** Case-insensitive map of known users, or `undefined` before connecting. */
+  get users(): IrcMap<User> | undefined {
+    return this.#store?.server.users;
+  }
+
+  /** Look up a joined channel by name (case-insensitive). */
+  channel(name: string): Channel | undefined {
+    return this.#store?.channel(name);
+  }
+
+  /** Look up a known user by nick (case-insensitive). */
+  user(nick: string): User | undefined {
+    return this.#store?.user(nick);
   }
 
   /**
@@ -173,6 +233,7 @@ export class IrcClient {
     this.#queue = null;
     this.#transport = null;
     this.#messages.complete();
+    this.#events.complete();
     this.#lifecycle.complete();
   }
 
@@ -219,6 +280,12 @@ export class IrcClient {
       let settled = false;
       let queue: OutboundQueue | null = null;
 
+      // Fresh state per attempt: a reconnect starts from a clean slate (the
+      // server resends 005/NAMES/etc. on re-registration).
+      const store = new StateStore(this.#options.nick);
+      const dispatcher = new Dispatcher(store);
+      this.#store = store;
+
       const failAttempt = (err: unknown): void => {
         if (settled) return;
         settled = true;
@@ -232,11 +299,26 @@ export class IrcClient {
         subscriber.complete();
       };
 
-      // Pump the per-attempt pipeline into the stable public stream; its
+      // Pump the per-attempt pipeline into the stable public streams; its
       // completion/error drives this attempt (and thus the retry decision).
+      // The dispatcher mutates `store` and emits entity-resolved events; a fault
+      // there must never tear down the connection (the raw message still flows
+      // on messages$), so dispatch is guarded.
       sub.add(
         messages$.subscribe({
-          next: (message) => this.#messages.next(message),
+          next: (message) => {
+            this.#messages.next(message);
+            // Isolate dispatch faults (a client-internal bug must not drop the
+            // connection) but surface them; consumer errors on events$ are not
+            // swallowed — only the dispatch call is guarded.
+            let event: IrcEvent | null = null;
+            try {
+              event = dispatcher.dispatch(message);
+            } catch (error) {
+              (this.#internals.onDispatchError ?? defaultDispatchErrorHandler)(error, message);
+            }
+            if (event !== null) this.#events.next(event);
+          },
           error: failAttempt,
           complete: completeAttempt,
         }),
@@ -259,6 +341,7 @@ export class IrcClient {
           if (settled) return;
           this.#nick = result.nick;
           this.#capabilities = result.capabilities;
+          store.server.setCaps(result.capabilities.enabled);
           this.#state = "registered";
           this.#emit({ type: "registered", nick: result.nick });
           // Signal success to retryWithBackoff (resetOnSuccess) so a later drop
@@ -277,6 +360,9 @@ export class IrcClient {
         settled = true;
         sub.unsubscribe();
         queue?.close();
+        // Complete this attempt's entity streams so subscribers to stale entity
+        // refs get completion (not a hang) after a drop/reconnect/quit.
+        store.disposeAll();
         // Only clear shared slots if they still belong to this attempt (a newer
         // attempt may already have replaced them).
         if (this.#queue === queue) this.#queue = null;

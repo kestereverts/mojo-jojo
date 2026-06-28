@@ -1,0 +1,110 @@
+import { describe, expect, test } from "bun:test";
+import {
+  parseIsupport,
+  isChannelName,
+  prefixToMode,
+  modeToPrefix,
+  EMPTY_ISUPPORT,
+} from "./parseIsupport.ts";
+
+describe("parseIsupport", () => {
+  test("parses PREFIX into ordered mode/prefix pairs (high rank first)", () => {
+    const s = parseIsupport(["PREFIX=(qaohv)~&@%+"]);
+    expect(s.prefixes).toEqual([
+      { mode: "q", prefix: "~" },
+      { mode: "a", prefix: "&" },
+      { mode: "o", prefix: "@" },
+      { mode: "h", prefix: "%" },
+      { mode: "v", prefix: "+" },
+    ]);
+  });
+
+  test("falls back to default PREFIX on a malformed value", () => {
+    const s = parseIsupport(["PREFIX=garbage"]);
+    expect(s.prefixes).toEqual([
+      { mode: "o", prefix: "@" },
+      { mode: "v", prefix: "+" },
+    ]);
+  });
+
+  test("parses CHANMODES into A/B/C/D groups", () => {
+    const s = parseIsupport(["CHANMODES=eIbq,k,flj,CFLMPQScgimnprstuz"]);
+    expect(s.chanModes).toEqual({
+      a: "eIbq",
+      b: "k",
+      c: "flj",
+      d: "CFLMPQScgimnprstuz",
+    });
+  });
+
+  test("parses CHANTYPES, NETWORK, CASEMAPPING, MODES", () => {
+    const s = parseIsupport([
+      "CHANTYPES=#&",
+      "NETWORK=AndroidIRC",
+      "CASEMAPPING=ascii",
+      "MODES=4",
+    ]);
+    expect(s.chanTypes).toBe("#&");
+    expect(s.network).toBe("AndroidIRC");
+    expect(s.caseMapping).toBe("ascii");
+    expect(s.modesPerLine).toBe(4);
+  });
+
+  test("CASEMAPPING defaults to rfc1459 when absent", () => {
+    expect(parseIsupport(["NETWORK=X"]).caseMapping).toBe("rfc1459");
+  });
+
+  test("a bare KEY becomes a boolean flag in raw", () => {
+    const s = parseIsupport(["WHOX", "SAFELIST"]);
+    expect(s.raw["WHOX"]).toBe(true);
+    expect(s.raw["SAFELIST"]).toBe(true);
+  });
+
+  test("accumulates across multiple 005 lines", () => {
+    const first = parseIsupport(["PREFIX=(ov)@+", "CHANTYPES=#"]);
+    const second = parseIsupport(["NETWORK=Test"], first);
+    expect(second.prefixes).toHaveLength(2);
+    expect(second.chanTypes).toBe("#");
+    expect(second.network).toBe("Test");
+  });
+
+  test("negation (-KEY) resets a key to its default", () => {
+    const first = parseIsupport(["CHANTYPES=#&+"]);
+    expect(first.chanTypes).toBe("#&+");
+    const second = parseIsupport(["-CHANTYPES"], first);
+    expect(second.chanTypes).toBe("#&"); // back to default
+    expect(second.raw["CHANTYPES"]).toBeUndefined();
+  });
+
+  test("unescapes \\xHH in values", () => {
+    // \x20 is a space.
+    const s = parseIsupport(["NETWORK=Two\\x20Words"]);
+    expect(s.network).toBe("Two Words");
+  });
+
+  test("EMPTY_ISUPPORT carries library defaults", () => {
+    expect(EMPTY_ISUPPORT.chanTypes).toBe("#&");
+    expect(EMPTY_ISUPPORT.caseMapping).toBe("rfc1459");
+    expect(EMPTY_ISUPPORT.network).toBeNull();
+  });
+});
+
+describe("ISupport helpers", () => {
+  const s = parseIsupport(["PREFIX=(ov)@+", "CHANTYPES=#&"]);
+
+  test("isChannelName checks CHANTYPES sigils", () => {
+    expect(isChannelName("#chan", s)).toBe(true);
+    expect(isChannelName("&local", s)).toBe(true);
+    expect(isChannelName("nick", s)).toBe(false);
+    expect(isChannelName("", s)).toBe(false);
+  });
+
+  test("prefixToMode / modeToPrefix round-trip", () => {
+    expect(prefixToMode("@", s)).toBe("o");
+    expect(prefixToMode("+", s)).toBe("v");
+    expect(prefixToMode("~", s)).toBeUndefined();
+    expect(modeToPrefix("o", s)).toBe("@");
+    expect(modeToPrefix("v", s)).toBe("+");
+    expect(modeToPrefix("q", s)).toBeUndefined();
+  });
+});

@@ -1,9 +1,10 @@
 // @mojo-jojo/irc-client — public API.
 //
 // M1 exposed the transport seam and the inbound byte -> message pipeline. M2
-// adds the connection facade: registration, CAP negotiation, PING/PONG, a
-// flood-controlled outbound queue, and exponential-backoff reconnection. State
-// entities, the rich event taxonomy, and the `.on()` facade arrive in M3/M5.
+// added the connection facade: registration, CAP negotiation, PING/PONG, a
+// flood-controlled outbound queue, and exponential-backoff reconnection. M3 adds
+// live state tracking (casemapping, ISUPPORT, entities) and the entity-resolved
+// event taxonomy. The unified `.on()` facade arrives in M5.
 
 // High-level facade
 export { IrcClient, type ClientState, type IrcClientInternals } from "./IrcClient.ts";
@@ -18,6 +19,63 @@ export {
   type Backend,
 } from "./options.ts";
 export type { LifecycleEvent } from "./events/lifecycle.ts";
+
+// Entity-resolved event taxonomy (M3)
+export type {
+  BaseEvent,
+  IrcEvent,
+  UserEvent,
+  ChannelEvent,
+  PrivmsgEvent,
+  ActionEvent,
+  NoticeEvent,
+  JoinEvent,
+  PartEvent,
+  QuitEvent,
+  KickEvent,
+  NickEvent,
+  ModeEvent,
+  TopicEvent,
+  NamesEvent,
+} from "./events/types.ts";
+export * as eventFactory from "./events/factory.ts";
+
+// State entities (M3)
+export { ReactiveEntity, type Unsubscribe } from "./entities/ReactiveEntity.ts";
+export { Server } from "./entities/Server.ts";
+export { Channel } from "./entities/Channel.ts";
+export { User } from "./entities/User.ts";
+export { Member } from "./entities/Member.ts";
+export { MemberList } from "./entities/MemberList.ts";
+
+// State store + dispatch (M3)
+export { StateStore } from "./state/StateStore.ts";
+export { Dispatcher } from "./state/dispatch.ts";
+
+// Casemapping + ISUPPORT (M3)
+export {
+  CaseMapper,
+  toCaseMapping,
+  DEFAULT_CASE_MAPPING,
+  type CaseMapping,
+} from "./casemapping/CaseMapper.ts";
+export { IrcMap, IrcSet } from "./casemapping/IrcMap.ts";
+export {
+  parseIsupport,
+  isChannelName,
+  prefixToMode,
+  modeToPrefix,
+  EMPTY_ISUPPORT,
+  type ISupport,
+  type PrefixSpec,
+  type ChanModes,
+} from "./isupport/parseIsupport.ts";
+export {
+  parseModeChanges,
+  classifyMode,
+  type ModeChange,
+  type ModeKind,
+} from "./protocol/modeParser.ts";
 
 // Transport
 export {
