@@ -949,3 +949,36 @@ describe("IrcClient — cap-notify (CAP NEW/DEL)", () => {
     client.quit();
   });
 });
+
+describe("IrcClient — outbound safety", () => {
+  const LF = String.fromCharCode(10);
+  const CR = String.fromCharCode(13);
+
+  test("actions throw on a newline-injection attempt (no extra command reaches the wire)", async () => {
+    const { client, mock } = await registerClient();
+    const before = mock.written.length;
+    expect(() => client.say("#mojo2", `hello${LF}KICK #mojo2 victim`)).toThrow(/CR, LF, or NUL/);
+    expect(() => client.raw("PRIVMSG", "#mojo2", `x${CR}y`)).toThrow();
+    expect(() => client.topic("#mojo2", `t${LF}MODE #mojo2 +o evil`)).toThrow();
+    // Nothing from those attempts was written.
+    expect(mock.written.slice(before)).toEqual([]);
+    client.quit();
+  });
+
+  test("an over-long action throws rather than emitting an invalid line", async () => {
+    const { client } = await registerClient();
+    expect(() => client.say("#mojo2", "x".repeat(600))).toThrow(/IRC line limit/);
+    client.quit();
+  });
+
+  test("quit() is robust to a hostile reason (stripped, single line, no throw)", async () => {
+    const { client, mock } = await registerClient();
+    expect(() => client.quit(`bye${LF}KICK #mojo2 victim`)).not.toThrow();
+    const quitLine = mock.written.find((l) => l.startsWith("QUIT"));
+    expect(quitLine).toBeDefined();
+    expect(quitLine!).toBe("QUIT :byeKICK #mojo2 victim\r\n"); // newline stripped, one line
+    // No standalone injected KICK line was written.
+    expect(mock.written.some((l) => l.startsWith("KICK"))).toBe(false);
+    expect(client.state).toBe("closed");
+  });
+});

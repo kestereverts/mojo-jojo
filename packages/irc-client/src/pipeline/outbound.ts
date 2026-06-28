@@ -22,9 +22,32 @@ export interface OutboundQueueOptions {
   readonly scheduler?: SchedulerLike;
 }
 
-/** Serialize a message to a complete wire line (CRLF included). */
-function serialize(message: Message): string {
-  return buildMessage(message) + "\r\n";
+/** The hard IRC line limit, including the trailing CRLF (RFC 1459/2812 §2.3). */
+export const MAX_LINE_BYTES = 512;
+
+const ENCODER = new TextEncoder();
+const DECODER = new TextDecoder();
+
+/**
+ * Bytes that must never appear inside a command or its params: CR and LF would
+ * split the wire line into extra messages (command injection — a hostile relayed
+ * text could smuggle e.g. a `KICK`), and NUL is not a legal message byte.
+ */
+const FORBIDDEN = /[\r\n\x00]/;
+const FORBIDDEN_GLOBAL = /[\r\n\x00]/g;
+
+function byteLength(text: string): number {
+  return ENCODER.encode(text).length;
+}
+
+/** Truncate `text` to at most `maxBytes` UTF-8 bytes without splitting a codepoint. */
+function truncateToBytes(text: string, maxBytes: number): string {
+  const bytes = ENCODER.encode(text);
+  if (bytes.length <= maxBytes) return text;
+  let end = maxBytes;
+  // Back up over any trailing UTF-8 continuation bytes (0b10xxxxxx).
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  return DECODER.decode(bytes.subarray(0, end));
 }
 
 /**
@@ -38,11 +61,20 @@ function serialize(message: Message): string {
  * — used for keepalive (`PONG`) and the registration handshake, which must never
  * be throttled behind queued chat.
  *
+ * Both paths guarantee **one call → exactly one wire line** within the
+ * {@link MAX_LINE_BYTES} limit. `send` (the user-facing actions path) is strict:
+ * a message whose serialized form contains CR/LF/NUL, or exceeds the line limit,
+ * **throws** synchronously so the caller learns of the bug (and an injected
+ * `\n …` can never reach the server). `sendImmediate` (internal priority traffic
+ * — `PONG`, registration, `QUIT`) is lenient: it strips those bytes and truncates
+ * to the limit, so keepalive and a clean disconnect can never be derailed by bad
+ * input.
+ *
  * One queue is owned per connection; {@link close} completes the pipeline and is
  * idempotent. After close, both send paths are no-ops.
  */
 export class OutboundQueue {
-  readonly #queue = new Subject<Message>();
+  readonly #queue = new Subject<string>();
   readonly #write: (line: string) => void;
   readonly #subscription: Subscription;
   #closed = false;
@@ -52,25 +84,50 @@ export class OutboundQueue {
     const scheduler: SchedulerLike = options.scheduler ?? asyncScheduler;
     this.#subscription = this.#queue
       .pipe(
-        concatMap((message) =>
-          // Emit the message, then hold the queue for floodDelayMs before the
-          // next one is pulled (the timer emits nothing — it is a pure spacer).
-          concat(of(message), timer(options.floodDelayMs, scheduler).pipe(ignoreElements())),
+        concatMap((line) =>
+          // Emit the line, then hold the queue for floodDelayMs before the next
+          // one is pulled (the timer emits nothing — it is a pure spacer).
+          concat(of(line), timer(options.floodDelayMs, scheduler).pipe(ignoreElements())),
         ),
       )
-      .subscribe((message) => this.#write(serialize(message)));
+      .subscribe((line) => this.#write(line));
   }
 
-  /** Enqueue a message for flood-controlled delivery. No-op after {@link close}. */
+  /**
+   * Enqueue a message for flood-controlled delivery. No-op after {@link close}.
+   *
+   * Throws if the serialized message would contain CR/LF/NUL or exceed the
+   * {@link MAX_LINE_BYTES} line limit — these indicate a caller bug (e.g. relaying
+   * unsanitized text, or an over-long message that should have been split), and
+   * sending them would corrupt the protocol stream / inject commands.
+   */
   send(message: Message): void {
     if (this.#closed) return;
-    this.#queue.next(message);
+    const body = buildMessage(message);
+    if (FORBIDDEN.test(body)) {
+      throw new Error(
+        "OutboundQueue: message contains CR, LF, or NUL — refusing to send (would inject extra commands)",
+      );
+    }
+    if (byteLength(body) + 2 > MAX_LINE_BYTES) {
+      throw new Error(
+        `OutboundQueue: message is ${byteLength(body) + 2} bytes, over the ${MAX_LINE_BYTES}-byte IRC line limit`,
+      );
+    }
+    this.#queue.next(body + "\r\n");
   }
 
-  /** Write a message immediately, bypassing the flood queue. No-op after {@link close}. */
+  /**
+   * Write a message immediately, bypassing the flood queue. No-op after
+   * {@link close}. Used only for internally-generated priority traffic, so it is
+   * lenient: CR/LF/NUL are stripped and the line is truncated to the limit rather
+   * than throwing, ensuring keepalive and `QUIT` can never be blocked by bad input.
+   */
   sendImmediate(message: Message): void {
     if (this.#closed) return;
-    this.#write(serialize(message));
+    let body = buildMessage(message).replace(FORBIDDEN_GLOBAL, "");
+    if (byteLength(body) + 2 > MAX_LINE_BYTES) body = truncateToBytes(body, MAX_LINE_BYTES - 2);
+    this.#write(body + "\r\n");
   }
 
   /** Stop the queue and release its subscription. Idempotent. */

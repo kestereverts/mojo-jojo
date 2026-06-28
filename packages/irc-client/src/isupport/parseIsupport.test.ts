@@ -27,6 +27,26 @@ describe("parseIsupport", () => {
     ]);
   });
 
+  test("an explicitly empty PREFIX/CHANTYPES means none (not the RFC default)", () => {
+    // Defaults apply only when the token is ABSENT; an explicit `=` (or bare flag)
+    // says the server supports none, and must not silently restore the defaults.
+    const empty = parseIsupport(["PREFIX=", "CHANTYPES="]);
+    expect(empty.prefixes).toEqual([]);
+    expect(empty.chanTypes).toBe("");
+
+    const bare = parseIsupport(["PREFIX", "CHANTYPES"]);
+    expect(bare.prefixes).toEqual([]);
+    expect(bare.chanTypes).toBe("");
+
+    // ...but a totally absent token still uses the RFC defaults.
+    const absent = parseIsupport(["NETWORK=Test"]);
+    expect(absent.prefixes).toEqual([
+      { mode: "o", prefix: "@" },
+      { mode: "v", prefix: "+" },
+    ]);
+    expect(absent.chanTypes).toBe("#&");
+  });
+
   test("parses CHANMODES into A/B/C/D groups", () => {
     const s = parseIsupport(["CHANMODES=eIbq,k,flj,CFLMPQScgimnprstuz"]);
     expect(s.chanModes).toEqual({

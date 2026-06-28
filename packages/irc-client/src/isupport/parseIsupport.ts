@@ -149,10 +149,20 @@ function deriveISupport(raw: Record<string, string | true>): ISupport {
       ? Number(modes)
       : null;
 
+  // RFC defaults apply only when a token is *absent*. An explicitly empty value
+  // (`PREFIX=` / `CHANTYPES=`) or a bare flag means the server supports none — it
+  // must not silently fall back to the defaults, or we'd parse status modes /
+  // classify channels the server said don't exist.
   return {
-    prefixes: typeof prefix === "string" ? parsePrefix(prefix) : DEFAULT_PREFIXES,
+    prefixes:
+      prefix === undefined
+        ? DEFAULT_PREFIXES
+        : typeof prefix === "string" && prefix !== ""
+          ? parsePrefix(prefix)
+          : [],
     chanModes: typeof chanModes === "string" ? parseChanModes(chanModes) : DEFAULT_CHAN_MODES,
-    chanTypes: typeof chanTypes === "string" && chanTypes !== "" ? chanTypes : DEFAULT_CHAN_TYPES,
+    chanTypes:
+      chanTypes === undefined ? DEFAULT_CHAN_TYPES : typeof chanTypes === "string" ? chanTypes : "",
     caseMapping: toCaseMapping(typeof caseMapping === "string" ? caseMapping : undefined),
     network: typeof network === "string" && network !== "" ? network : null,
     modesPerLine,

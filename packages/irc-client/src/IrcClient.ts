@@ -531,7 +531,14 @@ export class IrcClient {
         }),
       );
 
-      this.send({ ...message, tags: { ...message.tags, label } });
+      // `send` validates and can throw (CR/LF/NUL or over-limit). Route that
+      // failure through `finish` so the timer + subscriptions are torn down
+      // immediately rather than dangling until the timeout.
+      try {
+        this.send({ ...message, tags: { ...message.tags, label } });
+      } catch (error) {
+        finish(() => reject(error instanceof Error ? error : new Error(String(error))));
+      }
     });
   }
 

@@ -109,7 +109,7 @@ export { decodeLines } from "./pipeline/lineDecoder.ts";
 export { createMessageStream, type IrcPipelineOptions } from "./pipeline/IrcPipeline.ts";
 
 // Outbound pipeline
-export { OutboundQueue, type OutboundQueueOptions } from "./pipeline/outbound.ts";
+export { OutboundQueue, MAX_LINE_BYTES, type OutboundQueueOptions } from "./pipeline/outbound.ts";
 
 // Reconnection
 export {
