@@ -1,0 +1,49 @@
+# RxJS Operators Configuration
+# Common operator patterns for Angular applications
+
+transformation_operators:
+  - name: map
+    use_case: "Transform emitted values"
+    example: "map(user => user.name)"
+  - name: switchMap
+    use_case: "Switch to new observable, cancel previous"
+    example: "switchMap(id => this.service.get(id))"
+  - name: mergeMap
+    use_case: "Merge all emissions"
+    example: "mergeMap(id => this.download(id))"
+  - name: concatMap
+    use_case: "Sequential processing"
+    example: "concatMap(task => this.process(task))"
+
+filtering_operators:
+  - name: filter
+    use_case: "Filter values"
+    example: "filter(x => x > 0)"
+  - name: debounceTime
+    use_case: "Wait for pause in emissions"
+    example: "debounceTime(300)"
+  - name: distinctUntilChanged
+    use_case: "Emit only if different from previous"
+    example: "distinctUntilChanged()"
+  - name: takeUntil
+    use_case: "Complete on signal"
+    example: "takeUntil(this.destroy$)"
+
+combination_operators:
+  - name: combineLatest
+    use_case: "Latest values from all sources"
+    example: "combineLatest([a$, b$, c$])"
+  - name: forkJoin
+    use_case: "Wait for all to complete"
+    example: "forkJoin({users: users$, posts: posts$})"
+  - name: merge
+    use_case: "Combine multiple streams"
+    example: "merge(click$, hover$)"
+
+error_handling:
+  - name: catchError
+    use_case: "Handle errors"
+    example: "catchError(err => of(fallback))"
+  - name: retry
+    use_case: "Retry on error"
+    example: "retry(3)"

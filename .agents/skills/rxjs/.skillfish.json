@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "name": "rxjs",
+  "owner": "pluginagentmarketplace",
+  "repo": "custom-plugin-angular",
+  "path": "skills/rxjs",
+  "branch": "main",
+  "sha": "cd1173e9c13e6220ccb3c8280f5b687ad655dc3a",
+  "source": "manual"
+}
