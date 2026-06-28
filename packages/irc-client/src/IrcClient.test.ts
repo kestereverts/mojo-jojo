@@ -982,3 +982,79 @@ describe("IrcClient — outbound safety", () => {
     expect(client.state).toBe("closed");
   });
 });
+
+describe("IrcClient — resilience (M3 review)", () => {
+  test("a malformed/over-length inbound line is dropped, not fatal", async () => {
+    const mock = new MockTransport();
+    const parseErrors: string[] = [];
+    const client = new IrcClient(
+      {
+        host: "irc.test",
+        nick: "mojo",
+        tls: false,
+        transport: () => mock,
+        caps: [],
+        floodDelayMs: 0,
+        reconnect: { enabled: false }, // so a dropped connection would be observable
+      },
+      { onParseError: (_error, line) => parseErrors.push(line) },
+    );
+    const connected = client.connect();
+    await waitFor(() => mock.written.some((l) => l.startsWith("USER")));
+    mock.receiveLine(":irc 001 mojo :hi");
+    await connected;
+
+    const texts: string[] = [];
+    client.messages$.subscribe((m) => {
+      if (m.command === "PRIVMSG") texts.push(m.params[1]!);
+    });
+    // An over-510-byte line makes parseMessage throw; it must be skipped, not
+    // error the stream (which would drop the connection).
+    mock.receiveLine(`:a!a@h PRIVMSG #x :${"y".repeat(600)}`);
+    // A normal line right after still flows; the connection is still up.
+    mock.receiveLine(":a!a@h PRIVMSG #x :ok");
+    await waitFor(() => texts.includes("ok"));
+    expect(parseErrors.length).toBeGreaterThan(0);
+    expect(client.state).toBe("registered");
+    client.quit();
+  });
+
+  test("state leaves \"registered\" while reconnecting after an abnormal drop", async () => {
+    const mocks: MockTransport[] = [];
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => {
+        const m = new MockTransport();
+        mocks.push(m);
+        return m;
+      },
+      caps: [],
+      floodDelayMs: 0,
+      reconnect: { enabled: true, initialDelayMs: 1, factor: 1, jitter: false, maxDelayMs: 5 },
+    });
+    const connected = client.connect();
+    await waitFor(() => mocks.length === 1 && mocks[0]!.written.some((l) => l.startsWith("USER")));
+    mocks[0]!.receiveLine(":irc 001 mojo :hi");
+    await connected;
+    expect(client.state).toBe("registered");
+
+    mocks[0]!.fail(new Error("reset"));
+    // The new attempt is connecting/pre-registration: state must not be stale.
+    await waitFor(() => mocks.length === 2 && mocks[1]!.written.some((l) => l.startsWith("USER")));
+    expect(client.state).toBe("connecting");
+    mocks[1]!.receiveLine(":irc 001 mojo :hi again");
+    await waitFor(() => client.state === "registered");
+    client.quit();
+  });
+
+  test("client.nick follows a server-confirmed self NICK change", async () => {
+    const { client, mock } = await registerClient();
+    expect(client.nick).toBe("mojo");
+    mock.receiveLine(":mojo!u@h NICK mojo2");
+    await waitFor(() => client.nick === "mojo2");
+    expect(client.server?.nick).toBe("mojo2");
+    client.quit();
+  });
+});

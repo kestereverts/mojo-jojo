@@ -67,11 +67,22 @@ export interface IrcClientInternals {
    * Defaults to {@link defaultDispatchErrorHandler} (a `console.error`).
    */
   readonly onDispatchError?: (error: unknown, message: Message) => void;
+  /**
+   * Invoked when an inbound line fails to parse (malformed or over-length). The
+   * line is dropped and the connection continues (a single bad line never tears
+   * it down). Defaults to {@link defaultParseErrorHandler} (a `console.error`).
+   */
+  readonly onParseError?: (error: unknown, line: string) => void;
 }
 
 /** Default sink for dispatch faults: log them so they aren't silently lost. */
 function defaultDispatchErrorHandler(error: unknown, message: Message): void {
   console.error(`[irc-client] dispatch failed for ${message.command}:`, error);
+}
+
+/** Default sink for parse faults: log the dropped line rather than swallow it. */
+function defaultParseErrorHandler(error: unknown, line: string): void {
+  console.error(`[irc-client] dropping unparseable line (${line.length} chars):`, error);
 }
 
 /**
@@ -233,7 +244,14 @@ export class IrcClient {
     return this.#store?.channel(name);
   }
 
-  /** Look up a known user by nick (case-insensitive). */
+  /**
+   * Look up a known user by nick (case-insensitive). Returns a {@link User} only
+   * for someone we currently share a channel with (or ourself). A pure-PM partner
+   * — who sends us PRIVMSG/NOTICE but shares no channel — is intentionally not
+   * retained (it would leak over a long session), so this returns `undefined` for
+   * them; observe such messages via {@link events$} / {@link on}("privmsg") where
+   * the resolved sender is delivered on the event.
+   */
   user(nick: string): User | undefined {
     return this.#store?.user(nick);
   }
@@ -656,9 +674,16 @@ export class IrcClient {
       const attempt = ++this.#attemptCount;
       const transport = this.#options.transportFactory();
       this.#transport = transport;
+      // Every attempt (including a reconnect after an abnormal drop) is back in
+      // the connecting phase: keep the public `state` honest rather than leaving
+      // it on a stale "registered" while there is no usable connection.
+      this.#state = "connecting";
       this.#emit({ type: "connecting", attempt });
 
-      const messages$ = createMessageStream(transport, { backend: this.#options.backend });
+      const messages$ = createMessageStream(transport, {
+        backend: this.#options.backend,
+        onParseError: this.#internals.onParseError ?? defaultParseErrorHandler,
+      });
       const sub = new Subscription();
       let settled = false;
       let queue: OutboundQueue | null = null;
@@ -676,6 +701,10 @@ export class IrcClient {
       const failAttempt = (err: unknown): void => {
         if (settled) return;
         settled = true;
+        // No longer registered: drop out of "registered" immediately. If a retry
+        // follows, the next attempt re-enters "connecting"; if this is terminal,
+        // connect()'s error handler sets "closed". Either way `state` isn't stale.
+        if (this.#state === "registered") this.#state = "connecting";
         const error = err instanceof Error ? err : new Error(String(err));
         this.#emit({ type: "disconnected", local: false, error });
         subscriber.error(error);
@@ -704,7 +733,12 @@ export class IrcClient {
             } catch (error) {
               (this.#internals.onDispatchError ?? defaultDispatchErrorHandler)(error, message);
             }
-            if (event !== null) this.#events.next(event);
+            if (event !== null) {
+              // Keep the public `nick` getter in sync when the server confirms a
+              // change to *our* nick (it is otherwise only set at registration).
+              if (event.type === "nick" && event.isSelf) this.#nick = event.newNick;
+              this.#events.next(event);
+            }
           },
           error: failAttempt,
           complete: completeAttempt,

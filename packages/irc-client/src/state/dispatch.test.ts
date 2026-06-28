@@ -443,6 +443,49 @@ describe("dispatch — echo-message", () => {
   });
 });
 
+describe("dispatch — resource hygiene (no unbounded growth)", () => {
+  test("a PM/NOTICE from a non-channel stranger is not retained", () => {
+    const h = harness();
+    register(h);
+    // A stranger who shares no channel with us must not leak a User entity.
+    expect(h.feed(":stranger!s@h PRIVMSG me :hi")?.type).toBe("privmsg");
+    expect(h.store.user("stranger")).toBeUndefined();
+    expect(h.feed(":svc!s@h NOTICE me :a notice")?.type).toBe("notice");
+    expect(h.store.user("svc")).toBeUndefined();
+    expect(h.store.server.users.size).toBe(1); // only us
+
+    // ...but a channel member who PMs us IS kept (shared channel).
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":alice!a@h JOIN #chan");
+    h.feed(":alice!a@h PRIVMSG me :hey");
+    expect(h.store.user("alice")).toBeDefined();
+  });
+
+  test("TOPIC/MODE/332 for a non-joined channel create no phantom channel", () => {
+    const h = harness();
+    register(h);
+    expect(h.feed(":eve!e@h TOPIC #notjoined :hi")).toBeNull();
+    expect(h.feed(":op!o@h MODE #notjoined +m")).toBeNull();
+    expect(h.feed(":irc 332 me #notjoined :a topic")).toBeNull();
+    expect(h.store.channel("#notjoined")).toBeUndefined();
+    expect(h.store.server.channels.size).toBe(0);
+    // The non-member setters likewise leave no orphan users behind.
+    expect(h.store.user("eve")).toBeUndefined();
+    expect(h.store.user("op")).toBeUndefined();
+  });
+
+  test("a non-member MODE/TOPIC setter in a joined channel is not retained", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    // ChanServ sets a mode but isn't a member: applied, but not kept as a User.
+    const ev = h.feed(":ChanServ!s@services MODE #chan +m");
+    expect(ev?.type).toBe("mode");
+    expect(h.store.channel("#chan")?.modes.has("m")).toBe(true);
+    expect(h.store.user("ChanServ")).toBeUndefined();
+  });
+});
+
 describe("dispatch — passthrough", () => {
   test("unhandled commands return null (still visible on messages$)", () => {
     const h = harness();

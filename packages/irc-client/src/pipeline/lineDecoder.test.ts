@@ -55,4 +55,15 @@ describe("decodeLines", () => {
     const line = "@id=123;+ex.com/foo=a\\sb :nick!u@h PRIVMSG #c :hi";
     expect(await collect([line + "\r\n"])).toEqual([line]);
   });
+
+  test("bounds the buffer on a newline-less flood and resyncs at the next newline", async () => {
+    // A server streaming bytes with no newline must not grow the buffer without
+    // bound (OOM/DoS). Past the cap the runaway data is discarded and framing
+    // resynchronizes on the next newline — the connection survives.
+    const lines = await collect([
+      "x".repeat(70000), // > MAX_LINE_CHARS, no newline -> discarded
+      "tail-of-garbage\nPING after\r\n", // first newline ends the discard; next line is clean
+    ]);
+    expect(lines).toEqual(["PING after"]);
+  });
 });

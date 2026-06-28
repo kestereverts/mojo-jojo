@@ -1,5 +1,6 @@
 import type { Message, Source } from "@mojo-jojo/irc-message";
 import type { StateStore } from "./StateStore.ts";
+import type { User } from "../entities/User.ts";
 import type { IrcEvent } from "../events/types.ts";
 import { EMIT } from "../entities/internal.ts";
 import { isChannelName } from "../isupport/parseIsupport.ts";
@@ -138,6 +139,18 @@ export class Dispatcher {
     return source.user !== undefined || source.host !== undefined;
   }
 
+  /**
+   * Drop a user we just resolved if it turns out to be an orphan — not us and
+   * sharing no channel with us (a one-off PM/NOTICE/MODE/TOPIC source). Without
+   * this the global users map (and its per-user Subjects) would grow unbounded
+   * over a long session from strangers/services who never join a channel. The
+   * event was already emitted, so consumers still see it; `pruneOrphan` is a
+   * no-op for self or a still-shared user.
+   */
+  #pruneIfOrphan(user: User | null): void {
+    if (user !== null) this.#store.pruneOrphan(user.nick);
+  }
+
   // ---- registration burst ----
 
   #welcome(message: Message): null {
@@ -160,7 +173,11 @@ export class Dispatcher {
   #topicReply(message: Message): IrcEvent | null {
     const name = message.params[1];
     if (name === undefined) return null;
-    const channel = this.#store.getOrCreateChannel(name);
+    // Only for a channel we're actually in (the reply follows our JOIN). Don't
+    // create a phantom Channel for a topic *query* on a channel we never joined —
+    // it would linger forever (no self-PART ever removes it).
+    const channel = this.#store.channel(name);
+    if (!channel) return null;
     const topic = message.command === numerics.RPL_TOPIC ? (message.params[2] ?? null) : null;
     channel.setTopic(topic, null, null);
     const event = factory.topicEvent(message, { channel, topic, setBy: null, isInitial: true });
@@ -188,7 +205,11 @@ export class Dispatcher {
     const name = message.params[2];
     const list = message.params[3];
     if (name === undefined || list === undefined) return null;
-    const channel = this.#store.getOrCreateChannel(name);
+    // Only for a channel we're in — the JOIN echo always precedes the 353 burst.
+    // A `NAMES #x` query on a channel we never joined must not create a phantom
+    // channel + members that nothing prunes (same rule as 366/topic/mode).
+    const channel = this.#store.channel(name);
+    if (!channel) return null;
     for (const token of list.split(" ")) {
       if (token === "") continue;
       const entry = this.#splitNamesEntry(token);
@@ -548,7 +569,7 @@ export class Dispatcher {
     const modeString = message.params[1];
     if (target === undefined || modeString === undefined) return null;
     const source = message.source;
-    const by =
+    const resolveBy = (): User | null =>
       source !== null && this.#isUserSource(source)
         ? this.#store.getOrCreateUser(source.name)
         : null;
@@ -556,10 +577,14 @@ export class Dispatcher {
     if (!isChannelName(target, this.#store.server.isupport)) {
       // User mode: no params, no channel; track as a simple change list.
       const changes = this.#parseUserModes(modeString);
-      return factory.modeEvent(message, { target, channel: null, by, changes });
+      return factory.modeEvent(message, { target, channel: null, by: resolveBy(), changes });
     }
 
-    const channel = this.#store.getOrCreateChannel(target);
+    // Only for a channel we're in. A MODE for one we never joined (a query reply
+    // or unsolicited) must not create a phantom Channel that nothing removes.
+    const channel = this.#store.channel(target);
+    if (!channel) return null;
+    const by = resolveBy();
     const changes = parseModeChanges(modeString, message.params.slice(2), this.#store.server.isupport);
     for (const change of changes) {
       if (change.kind === "prefix") {
@@ -574,6 +599,7 @@ export class Dispatcher {
     }
     const event = factory.modeEvent(message, { target, channel, by, changes });
     channel[EMIT](event);
+    this.#pruneIfOrphan(by); // a non-member setter (e.g. ChanServ) shouldn't linger
     return event;
   }
 
@@ -592,7 +618,10 @@ export class Dispatcher {
     const source = message.source;
     const name = message.params[0];
     if (name === undefined) return null;
-    const channel = this.#store.getOrCreateChannel(name);
+    // Only for a channel we're in (we receive live TOPIC because we're a member);
+    // don't create a phantom for a channel we never joined.
+    const channel = this.#store.channel(name);
+    if (!channel) return null;
     const topic = message.params[1] ?? null;
     const setBy =
       source !== null && this.#isUserSource(source)
@@ -601,6 +630,7 @@ export class Dispatcher {
     channel.setTopic(topic, setBy?.nick ?? null, factory.eventTime(message));
     const event = factory.topicEvent(message, { channel, topic, setBy, isInitial: false });
     channel[EMIT](event);
+    this.#pruneIfOrphan(setBy); // a non-member setter shouldn't linger in the users map
     return event;
   }
 
@@ -636,6 +666,7 @@ export class Dispatcher {
         : factory.privmsgEvent(message, { ...fields, text });
     channel?.[EMIT](event);
     user[EMIT](event);
+    this.#pruneIfOrphan(user); // a PM/CTCP from a non-channel stranger shouldn't linger
     return event;
   }
 
@@ -669,6 +700,7 @@ export class Dispatcher {
     });
     channel?.[EMIT](event);
     user?.[EMIT](event);
+    this.#pruneIfOrphan(user); // a NOTICE from a non-channel service shouldn't linger
     return event;
   }
 }
