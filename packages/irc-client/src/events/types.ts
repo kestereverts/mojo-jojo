@@ -118,6 +118,20 @@ export interface NickEvent extends BaseEvent {
   readonly isSelf: boolean;
 }
 
+/**
+ * A user logged in to or out of a services account (`account-notify`). Affects
+ * every channel we share with them.
+ */
+export interface AccountEvent extends BaseEvent {
+  readonly type: "account";
+  readonly user: User;
+  /** New account name, or `null` when the user logged out (`*`). */
+  readonly account: string | null;
+  /** Channels we share with the user (the event is routed to each). */
+  readonly channels: readonly Channel[];
+  readonly isSelf: boolean;
+}
+
 /** A channel (or our user) mode changed. */
 export interface ModeEvent extends BaseEvent {
   readonly type: "mode";
@@ -149,7 +163,7 @@ export interface NamesEvent extends BaseEvent {
   readonly members: readonly Member[];
 }
 
-/** Discriminated union of every entity-resolved protocol event (M3 subset). */
+/** Discriminated union of every entity-resolved protocol event (M3 + M4). */
 export type IrcEvent =
   | PrivmsgEvent
   | ActionEvent
@@ -159,12 +173,19 @@ export type IrcEvent =
   | QuitEvent
   | KickEvent
   | NickEvent
+  | AccountEvent
   | ModeEvent
   | TopicEvent
   | NamesEvent;
 
 /** The events routed into a {@link User}'s per-entity stream. */
-export type UserEvent = PrivmsgEvent | ActionEvent | NoticeEvent | NickEvent | QuitEvent;
+export type UserEvent =
+  | PrivmsgEvent
+  | ActionEvent
+  | NoticeEvent
+  | NickEvent
+  | AccountEvent
+  | QuitEvent;
 
 /** The events routed into a {@link Channel}'s per-entity stream. */
 export type ChannelEvent =
@@ -176,6 +197,7 @@ export type ChannelEvent =
   | QuitEvent
   | KickEvent
   | NickEvent
+  | AccountEvent
   | ModeEvent
   | TopicEvent
   | NamesEvent;

@@ -62,22 +62,42 @@ export const ERR_PASSWDMISMATCH = "464";
 /** The client is K-/G-lined (banned) — fatal during registration. */
 export const ERR_YOUREBANNEDCREEP = "465";
 
-// ---- SASL (handled in M4; named here so the registration flow can reference them) ----
-/** SASL mechanisms / logged-in confirmation. */
+// ---- SASL (M4) ----
+/** Logged in to an account (`<nick> <nick!user@host> <account> :…`). */
 export const RPL_LOGGEDIN = "900";
+/** Logged out of an account. */
 export const RPL_LOGGEDOUT = "901";
+/** Account is locked/unavailable — a terminal SASL failure. */
+export const ERR_NICKLOCKED = "902";
 /** SASL authentication was successful. */
 export const RPL_SASLSUCCESS = "903";
 /** SASL authentication failed (bad credentials). */
 export const ERR_SASLFAIL = "904";
 /** SASL message too long. */
 export const ERR_SASLTOOLONG = "905";
-/** SASL aborted by the client. */
+/** SASL aborted by the client (`AUTHENTICATE *`). */
 export const ERR_SASLABORTED = "906";
-/** SASL already authenticated. */
+/** SASL already authenticated on this connection. */
 export const ERR_SASLALREADY = "907";
 /** Advertises the SASL mechanisms the server supports. */
 export const RPL_SASLMECHS = "908";
+
+/**
+ * Every numeric that belongs to the SASL exchange (900–908). Used by the
+ * registration coordinator to route SASL replies to the {@link SaslSession}
+ * rather than the generic handler.
+ */
+export const SASL_NUMERICS: ReadonlySet<string> = new Set([
+  RPL_LOGGEDIN,
+  RPL_LOGGEDOUT,
+  ERR_NICKLOCKED,
+  RPL_SASLSUCCESS,
+  ERR_SASLFAIL,
+  ERR_SASLTOOLONG,
+  ERR_SASLABORTED,
+  ERR_SASLALREADY,
+  RPL_SASLMECHS,
+]);
 
 /**
  * Numerics that fatally end the registration handshake before `001` — the

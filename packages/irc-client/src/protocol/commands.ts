@@ -45,6 +45,16 @@ export function capEnd(): Message {
   return command("CAP", "END");
 }
 
+/**
+ * `AUTHENTICATE <payload>` — one line of the SASL exchange. `payload` is a
+ * mechanism name (`PLAIN`), a base64 chunk of the response, or `+` (empty
+ * response / continuation marker). Base64 carries no spaces, so it serializes as
+ * a single middle param.
+ */
+export function authenticate(payload: string): Message {
+  return command("AUTHENTICATE", payload);
+}
+
 /** `PONG :<token>` — reply to a server `PING` (priority/keepalive path). */
 export function pong(token: string): Message {
   return command("PONG", token);

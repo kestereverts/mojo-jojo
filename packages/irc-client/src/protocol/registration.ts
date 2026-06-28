@@ -13,7 +13,10 @@ import {
   ERR_UNKNOWNCOMMAND,
   REGISTRATION_FATAL_NUMERICS,
   RPL_WELCOME,
+  SASL_NUMERICS,
 } from "./numerics.ts";
+import { mechanismFor, SaslSession } from "./sasl.ts";
+import type { SaslOptions } from "../options.ts";
 
 /** Raised when the registration handshake cannot complete. */
 export class RegistrationError extends Error {
@@ -40,9 +43,15 @@ export interface RegistrationOptions {
   /** Alternate nicks to try, in order, when the primary is in use (`433`). */
   readonly altNicks?: readonly string[];
   /**
-   * Whether to keep `sasl` in the requested set (M4). When false (the M2
-   * default) `sasl` is dropped during reconciliation — there is nothing to
-   * authenticate with yet.
+   * SASL credentials. When set, `sasl` is kept in the requested cap set and the
+   * `AUTHENTICATE` exchange runs after `ACK` and before `CAP END`. If the server
+   * then refuses the `sasl` capability, registration fails closed rather than
+   * silently continuing unauthenticated.
+   */
+  readonly sasl?: SaslOptions;
+  /**
+   * Force `sasl` into the requested set even without {@link sasl} credentials
+   * (rarely useful on its own). Implied whenever {@link sasl} is set.
    */
   readonly saslRequested?: boolean;
   /** Overall handshake timeout in milliseconds (default 30000). */
@@ -57,6 +66,8 @@ export interface RegistrationResult {
   readonly welcome: Message;
   /** Capability state (available + enabled) as of `CAP END`. */
   readonly capabilities: CapabilityStore;
+  /** Services account from a successful SASL login (`900`), or `null`. */
+  readonly account: string | null;
 }
 
 /** Collaborators {@link register} drives the handshake through. */
@@ -108,8 +119,10 @@ function chunkCaps(caps: readonly string[]): string[][] {
  * fatal registration numeric, an abnormal disconnect, or timeout. `PING` is
  * left to the client's long-lived responder.
  *
- * SASL slots in after `ACK` and before `CAP END` in M4; the seam is the
- * `concludeCaps` call below.
+ * When {@link RegistrationOptions.sasl} is set, the `AUTHENTICATE` exchange runs
+ * between the final `ACK`/`NAK` and `CAP END`: the inbound `AUTHENTICATE` lines
+ * and SASL numerics (900–908) are routed to a {@link SaslSession}, and `CAP END`
+ * is held until it succeeds. A terminal SASL failure rejects registration.
  */
 export function register(
   deps: RegistrationDeps,
@@ -120,10 +133,15 @@ export function register(
   const caps = new CapabilityStore();
   const altNicks = options.altNicks ?? [];
   const pending = new Set<string>();
+  // Setting `sasl` credentials implies requesting the `sasl` capability.
+  const saslRequested = options.sasl !== undefined || (options.saslRequested ?? false);
 
   let nickIndex = 0;
   let currentNick = options.nick;
   let capsConcluded = false;
+  let saslSession: SaslSession | null = null;
+  let saslSucceeded = false;
+  let saslAccount: string | null = null;
 
   return new Promise<RegistrationResult>((resolve, reject) => {
     const done$ = new Subject<void>();
@@ -146,6 +164,30 @@ export function register(
       send(capEnd());
     };
 
+    /**
+     * Once CAP REQ has fully resolved (all pending caps ACK/NAK'd), either kick
+     * off the SASL exchange or conclude negotiation. With SASL credentials but no
+     * enabled `sasl` cap, fail closed instead of registering unauthenticated.
+     */
+    const beginSaslOrConclude = (): void => {
+      if (options.sasl === undefined) {
+        concludeCaps();
+        return;
+      }
+      if (!caps.isEnabled("sasl")) {
+        settle(() =>
+          reject(
+            new RegistrationError(
+              "SASL was requested but the server did not enable the `sasl` capability",
+            ),
+          ),
+        );
+        return;
+      }
+      saslSession = new SaslSession(mechanismFor(options.sasl));
+      send(saslSession.start());
+    };
+
     const nextNick = (): void => {
       nickIndex += 1;
       currentNick = altNicks[nickIndex - 1] ?? `${options.nick}${nickIndex}`;
@@ -157,13 +199,9 @@ export function register(
         case "LS": {
           caps.addAvailable(cap.tokens);
           if (!cap.final) return; // continuation line; wait for the rest
-          const requested = reconcileCaps(
-            options.desiredCaps,
-            caps.available,
-            options.saslRequested ?? false,
-          );
+          const requested = reconcileCaps(options.desiredCaps, caps.available, saslRequested);
           if (requested.length === 0) {
-            concludeCaps();
+            beginSaslOrConclude();
             return;
           }
           for (const name of requested) pending.add(name);
@@ -173,14 +211,12 @@ export function register(
         case "ACK": {
           caps.applyAck(cap.tokens);
           for (const token of cap.tokens) pending.delete(token.name);
-          // M4 seam: if `sasl` is now enabled and credentials exist, run the
-          // AUTHENTICATE exchange here before concluding.
-          if (pending.size === 0) concludeCaps();
+          if (pending.size === 0) beginSaslOrConclude();
           return;
         }
         case "NAK": {
           for (const token of cap.tokens) pending.delete(token.name);
-          if (pending.size === 0) concludeCaps();
+          if (pending.size === 0) beginSaslOrConclude();
           return;
         }
         // NEW/DEL/LIST are runtime concerns (M3+), not part of registration.
@@ -189,39 +225,94 @@ export function register(
       }
     };
 
-    const handle = (message: Message): void => {
-      const cmd = message.command;
+    /** Reject because SASL was required but registration finished without it. */
+    const failSaslClosed = (reason: string): void => {
+      settle(() => reject(new RegistrationError(reason)));
+    };
 
-      if (cmd === RPL_WELCOME) {
-        const accepted = message.params[0] ?? currentNick;
-        settle(() =>
-          resolve({ nick: accepted, welcome: message, capabilities: caps }),
-        );
-        return;
-      }
-      if (cmd === ERR_NICKNAMEINUSE || cmd === ERR_NICKCOLLISION) {
-        nextNick();
-        return;
-      }
-      if (REGISTRATION_FATAL_NUMERICS.has(cmd)) {
+    const handle = (message: Message): void => {
+      // A synchronous throw here (e.g. a malformed SASL challenge) must reject the
+      // handshake cleanly, never error the shared inbound pipeline.
+      try {
+        const cmd = message.command;
+
+        if (cmd === RPL_WELCOME) {
+          // Fail closed: if credentials were configured but SASL never succeeded,
+          // a premature/early `001` (or an injected one) must not register us
+          // unauthenticated.
+          if (options.sasl !== undefined && !saslSucceeded) {
+            failSaslClosed("registration completed (001) before SASL authentication succeeded");
+            return;
+          }
+          const accepted = message.params[0] ?? currentNick;
+          settle(() =>
+            resolve({ nick: accepted, welcome: message, capabilities: caps, account: saslAccount }),
+          );
+          return;
+        }
+        if (cmd === ERR_NICKNAMEINUSE || cmd === ERR_NICKCOLLISION) {
+          nextNick();
+          return;
+        }
+        if (REGISTRATION_FATAL_NUMERICS.has(cmd)) {
+          settle(() =>
+            reject(
+              new RegistrationError(
+                `registration rejected by server (${cmd}): ${message.params.join(" ")}`,
+              ),
+            ),
+          );
+          return;
+        }
+        if (cmd === ERR_UNKNOWNCOMMAND && message.params[1] === "CAP") {
+          // Legacy server with no capability support. With SASL configured this is
+          // a fail-closed condition (and guards against a spoofed 421 downgrade);
+          // otherwise let the already-sent NICK/USER complete registration without
+          // ever sending CAP END.
+          if (options.sasl !== undefined) {
+            failSaslClosed("server does not support capability negotiation; cannot SASL");
+            return;
+          }
+          capsConcluded = true;
+          return;
+        }
+
+        // SASL exchange: while a session is live, AUTHENTICATE lines and SASL
+        // numerics (900–908) belong to it, not the generic CAP/numeric handling.
+        if (saslSession !== null && (cmd === "AUTHENTICATE" || SASL_NUMERICS.has(cmd))) {
+          const step = saslSession.handle(message);
+          switch (step.type) {
+            case "send":
+              for (const line of step.messages) send(line);
+              break;
+            case "success":
+              saslSucceeded = true;
+              saslAccount = step.account;
+              saslSession = null;
+              concludeCaps();
+              break;
+            case "failure":
+              saslSession = null;
+              failSaslClosed(`SASL authentication failed (${step.code}): ${step.reason}`);
+              break;
+            case "continue":
+              break;
+          }
+          return;
+        }
+
+        const cap = parseCapMessage(message);
+        if (cap !== null) handleCap(cap);
+      } catch (err) {
         settle(() =>
           reject(
             new RegistrationError(
-              `registration rejected by server (${cmd}): ${message.params.join(" ")}`,
+              "unexpected error during registration handshake",
+              err instanceof Error ? err : new Error(String(err)),
             ),
           ),
         );
-        return;
       }
-      if (cmd === ERR_UNKNOWNCOMMAND && message.params[1] === "CAP") {
-        // Legacy server with no capability support: stop waiting on CAP and let
-        // the already-sent NICK/USER complete registration. Never send CAP END.
-        capsConcluded = true;
-        return;
-      }
-
-      const cap = parseCapMessage(message);
-      if (cap !== null) handleCap(cap);
     };
 
     timer(timeoutMs)

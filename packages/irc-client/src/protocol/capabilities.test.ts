@@ -78,6 +78,14 @@ describe("reconcileCaps", () => {
     expect(reconcileCaps("all", available, false)).toEqual(["multi-prefix", "server-time"]);
     expect(reconcileCaps("all", available, true)).toEqual(["multi-prefix", "sasl", "server-time"]);
   });
+
+  test("requests sasl when saslRequested even if the explicit list omits it", () => {
+    // Configuring SASL credentials must request the cap regardless of `caps`.
+    expect(reconcileCaps(["multi-prefix"], available, true)).toEqual(["multi-prefix", "sasl"]);
+    // ...but not if the server doesn't advertise it.
+    const noSasl = new Map<string, CapValue>([["multi-prefix", null]]);
+    expect(reconcileCaps(["multi-prefix"], noSasl, true)).toEqual(["multi-prefix"]);
+  });
 });
 
 describe("CapabilityStore", () => {

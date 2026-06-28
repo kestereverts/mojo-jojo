@@ -98,9 +98,13 @@ export function parseCapMessage(message: Message): CapMessage | null {
  *
  * With an explicit list, returns the subset the server offers, preserving the
  * list's order. With `"all"`, returns every advertised capability (in
- * advertisement order). `sasl` is only kept when `saslRequested` is true — there
- * is no point enabling SASL with no credentials to authenticate with (the actual
- * SASL exchange lands in M4).
+ * advertisement order).
+ *
+ * `sasl` is treated specially so it always tracks intent: when `saslRequested`
+ * is false it is dropped (no point enabling SASL with nothing to authenticate
+ * with); when true it is always included if advertised — even if the caller's
+ * explicit list omitted it — so configuring credentials is sufficient on its own
+ * and never silently fails to request the cap.
  */
 export function reconcileCaps(
   desired: readonly string[] | "all",
@@ -113,6 +117,9 @@ export function reconcileCaps(
     if (!available.has(cap)) continue;
     if (cap === "sasl" && !saslRequested) continue;
     requested.push(cap);
+  }
+  if (saslRequested && available.has("sasl") && !requested.includes("sasl")) {
+    requested.push("sasl");
   }
   return requested;
 }

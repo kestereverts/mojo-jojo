@@ -2,6 +2,7 @@ import type { Observable } from "rxjs";
 import type { Source } from "@mojo-jojo/irc-message";
 import { ReactiveEntity } from "./ReactiveEntity.ts";
 import type {
+  AccountEvent,
   ActionEvent,
   NickEvent,
   NoticeEvent,
@@ -13,8 +14,8 @@ import type {
 /**
  * A single network identity (one per nick, case-insensitively). Tracks the
  * user's current nick and the latest `user`/`host`/`realName`/`account` learned
- * from any message. Distinct from {@link "./Member.ts" | Member}, which is this
- * user's membership in one specific channel.
+ * from any message. Distinct from {@link Member}, which is this user's membership
+ * in one specific channel.
  *
  * State is mutated only by the StateStore via the `@internal` methods.
  */
@@ -77,6 +78,10 @@ export class User extends ReactiveEntity<UserEvent> {
   /** This user's nick changes. */
   get nickChanges$(): Observable<NickEvent> {
     return this.stream("nick");
+  }
+  /** This user logging in to / out of a services account (`account-notify`). */
+  get accountChanges$(): Observable<AccountEvent> {
+    return this.stream("account");
   }
   /** This user quitting the network. */
   get quit$(): Observable<QuitEvent> {

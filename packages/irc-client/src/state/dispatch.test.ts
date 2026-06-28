@@ -371,6 +371,76 @@ describe("dispatch — account synchronization", () => {
     h.feed("@account=graceAcct :grace!g@h PRIVMSG #chan :hi");
     expect(h.store.user("grace")?.account).toBe("graceAcct");
   });
+
+  test("account-notify ACCOUNT login updates the user and emits an AccountEvent", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":grace!g@h JOIN #chan");
+    const event = h.feed(":grace!g@h ACCOUNT graceAcct");
+    expect(event?.type).toBe("account");
+    if (event?.type === "account") {
+      expect(event.user.nick).toBe("grace");
+      expect(event.account).toBe("graceAcct");
+      expect(event.isSelf).toBe(false);
+      expect(event.channels.map((c) => c.name)).toEqual(["#chan"]);
+    }
+    expect(h.store.user("grace")?.account).toBe("graceAcct");
+  });
+
+  test("account-notify ACCOUNT * clears the account (logout)", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":grace!g@h JOIN #chan");
+    h.feed(":grace!g@h ACCOUNT graceAcct");
+    const event = h.feed(":grace!g@h ACCOUNT *");
+    expect(event?.type).toBe("account");
+    if (event?.type === "account") expect(event.account).toBeNull();
+    expect(h.store.user("grace")?.account).toBeNull();
+  });
+
+  test("ACCOUNT routes to the user's and shared channel's per-entity streams", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":grace!g@h JOIN #chan");
+    const onUser: (string | null)[] = [];
+    const onChannel: (string | null)[] = [];
+    h.store.user("grace")!.accountChanges$.subscribe((e) => onUser.push(e.account));
+    h.store.channel("#chan")!.accountChanges$.subscribe((e) => onChannel.push(e.account));
+    h.feed(":grace!g@h ACCOUNT graceAcct");
+    expect(onUser).toEqual(["graceAcct"]);
+    expect(onChannel).toEqual(["graceAcct"]);
+  });
+
+  test("ACCOUNT for an untracked user is ignored (no event, no phantom user)", () => {
+    const h = harness();
+    register(h);
+    const event = h.feed(":stranger!s@h ACCOUNT acct");
+    expect(event).toBeNull();
+    expect(h.store.user("stranger")).toBeUndefined();
+  });
+});
+
+describe("dispatch — echo-message", () => {
+  test("our own echoed PRIVMSG resolves us as the speaker and routes to the channel", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    const seen: string[] = [];
+    h.store.channel("#chan")!.messages$.subscribe((e) => seen.push(e.text));
+    const event = h.feed("@time=2021-11-14T22:13:20.000Z :me!u@h PRIVMSG #chan :hi from me");
+    expect(event?.type).toBe("privmsg");
+    if (event?.type === "privmsg") {
+      expect(event.user.isSelf).toBe(true);
+      expect(event.member?.nick).toBe("me");
+      expect(event.text).toBe("hi from me");
+      // server-time on the echo drives the event timestamp.
+      expect(event.time.toISOString()).toBe("2021-11-14T22:13:20.000Z");
+    }
+    expect(seen).toEqual(["hi from me"]);
+  });
 });
 
 describe("dispatch — passthrough", () => {

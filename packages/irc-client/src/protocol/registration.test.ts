@@ -7,6 +7,7 @@ import {
   type RegistrationOptions,
   type RegistrationResult,
 } from "./registration.ts";
+import { decodeBase64 } from "./sasl.ts";
 
 interface Harness {
   readonly sent: Message[];
@@ -175,5 +176,161 @@ describe("register", () => {
     });
     expect(caught).toBeInstanceOf(RegistrationError);
     expect((caught as RegistrationError).message).toContain("timed out");
+  });
+
+  // ---- SASL (M4) ----
+
+  test("drops `sasl` from the requested caps when no credentials are configured", async () => {
+    const h = harness({ desiredCaps: ["sasl", "multi-prefix"] });
+    h.feed(":irc CAP * LS :sasl multi-prefix");
+    expect(h.lines()).toContain("CAP REQ multi-prefix");
+    expect(h.lines().some((l) => l.includes("sasl"))).toBe(false);
+    h.feed(":irc CAP mojo ACK :multi-prefix");
+    expect(h.lines()).toContain("CAP END");
+    h.feed(":irc 001 mojo :hi");
+    await h.result;
+  });
+
+  test("runs the PLAIN exchange between ACK and CAP END, then registers", async () => {
+    const h = harness({
+      desiredCaps: ["sasl"],
+      sasl: { mechanism: "PLAIN", username: "mojo", password: "hunter2" },
+    });
+    h.feed(":irc CAP * LS :sasl=PLAIN,EXTERNAL");
+    expect(h.lines()).toContain("CAP REQ sasl");
+    h.feed(":irc CAP mojo ACK :sasl");
+    // CAP END is held until SASL completes.
+    expect(h.lines()).toContain("AUTHENTICATE PLAIN");
+    expect(h.lines()).not.toContain("CAP END");
+
+    h.feed("AUTHENTICATE +");
+    const payload = h
+      .lines()
+      .find((l) => l.startsWith("AUTHENTICATE ") && l !== "AUTHENTICATE PLAIN")!;
+    expect(decodeBase64(payload.slice("AUTHENTICATE ".length))).toBe("\0mojo\0hunter2");
+    expect(h.lines()).not.toContain("CAP END"); // still waiting for 903
+
+    h.feed(":irc 900 mojo mojo!u@h MojoAcct :now logged in");
+    h.feed(":irc 903 mojo :SASL authentication successful");
+    expect(h.lines()).toContain("CAP END");
+
+    h.feed(":irc 001 mojo :Welcome");
+    const result = await h.result;
+    expect(result.capabilities.isEnabled("sasl")).toBe(true);
+    // The account from 900 RPL_LOGGEDIN is surfaced on the result.
+    expect(result.account).toBe("MojoAcct");
+  });
+
+  test("runs the EXTERNAL exchange with an empty response", async () => {
+    const h = harness({ desiredCaps: ["sasl"], sasl: { mechanism: "EXTERNAL" } });
+    h.feed(":irc CAP * LS :sasl=EXTERNAL");
+    h.feed(":irc CAP mojo ACK :sasl");
+    expect(h.lines()).toContain("AUTHENTICATE EXTERNAL");
+    h.feed("AUTHENTICATE +");
+    // The empty authzid is sent as `AUTHENTICATE +`.
+    expect(h.lines().filter((l) => l === "AUTHENTICATE +")).toHaveLength(1);
+    h.feed(":irc 903 mojo :ok");
+    expect(h.lines()).toContain("CAP END");
+    h.feed(":irc 001 mojo :Welcome");
+    await h.result;
+  });
+
+  test("rejects on a SASL failure (904) and never sends CAP END", async () => {
+    const h = harness({
+      desiredCaps: ["sasl"],
+      sasl: { mechanism: "PLAIN", username: "mojo", password: "wrong" },
+      timeoutMs: 1000,
+    });
+    h.feed(":irc CAP * LS :sasl");
+    h.feed(":irc CAP mojo ACK :sasl");
+    h.feed("AUTHENTICATE +");
+    h.feed(":irc 904 mojo :SASL authentication failed");
+    let caught: unknown;
+    await h.result.catch((e: unknown) => {
+      caught = e;
+    });
+    expect(caught).toBeInstanceOf(RegistrationError);
+    expect((caught as RegistrationError).message).toContain("904");
+    expect(h.lines()).not.toContain("CAP END");
+  });
+
+  test("fails closed when SASL is configured but the server doesn't offer it", async () => {
+    const h = harness({
+      desiredCaps: ["sasl"],
+      sasl: { mechanism: "PLAIN", username: "mojo", password: "pw" },
+      timeoutMs: 1000,
+    });
+    h.feed(":irc CAP * LS :multi-prefix server-time");
+    let caught: unknown;
+    await h.result.catch((e: unknown) => {
+      caught = e;
+    });
+    expect(caught).toBeInstanceOf(RegistrationError);
+    expect((caught as RegistrationError).message).toContain("sasl");
+    expect(h.lines()).not.toContain("CAP END");
+  });
+
+  test("fails closed when the server NAKs the sasl capability", async () => {
+    const h = harness({
+      desiredCaps: ["sasl"],
+      sasl: { mechanism: "PLAIN", username: "mojo", password: "pw" },
+      timeoutMs: 1000,
+    });
+    h.feed(":irc CAP * LS :sasl");
+    h.feed(":irc CAP mojo NAK :sasl");
+    let caught: unknown;
+    await h.result.catch((e: unknown) => {
+      caught = e;
+    });
+    expect(caught).toBeInstanceOf(RegistrationError);
+    expect(h.lines()).not.toContain("CAP END");
+  });
+
+  test("fails closed when 001 arrives before SASL completes (early/injected welcome)", async () => {
+    const h = harness({
+      desiredCaps: ["sasl"],
+      sasl: { mechanism: "PLAIN", username: "mojo", password: "pw" },
+      timeoutMs: 1000,
+    });
+    h.feed(":irc CAP * LS :sasl");
+    h.feed(":irc CAP mojo ACK :sasl");
+    expect(h.lines()).toContain("AUTHENTICATE PLAIN");
+    // A premature 001 mid-exchange must not register us unauthenticated.
+    h.feed(":irc 001 mojo :Welcome");
+    let caught: unknown;
+    await h.result.catch((e: unknown) => {
+      caught = e;
+    });
+    expect(caught).toBeInstanceOf(RegistrationError);
+    expect((caught as RegistrationError).message).toContain("before SASL");
+  });
+
+  test("fails closed when 001 arrives before any CAP negotiation", async () => {
+    const h = harness({
+      desiredCaps: ["sasl"],
+      sasl: { mechanism: "PLAIN", username: "mojo", password: "pw" },
+      timeoutMs: 1000,
+    });
+    h.feed(":irc 001 mojo :Welcome"); // server skips CAP entirely
+    let caught: unknown;
+    await h.result.catch((e: unknown) => {
+      caught = e;
+    });
+    expect(caught).toBeInstanceOf(RegistrationError);
+  });
+
+  test("fails closed on a legacy server (421 CAP) when SASL is configured", async () => {
+    const h = harness({
+      desiredCaps: ["sasl"],
+      sasl: { mechanism: "PLAIN", username: "mojo", password: "pw" },
+      timeoutMs: 1000,
+    });
+    h.feed(":irc 421 mojo CAP :Unknown command");
+    let caught: unknown;
+    await h.result.catch((e: unknown) => {
+      caught = e;
+    });
+    expect(caught).toBeInstanceOf(RegistrationError);
+    expect((caught as RegistrationError).message).toContain("capability negotiation");
   });
 });

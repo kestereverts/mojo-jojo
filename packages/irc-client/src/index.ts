@@ -4,7 +4,8 @@
 // added the connection facade: registration, CAP negotiation, PING/PONG, a
 // flood-controlled outbound queue, and exponential-backoff reconnection. M3 adds
 // live state tracking (casemapping, ISUPPORT, entities) and the entity-resolved
-// event taxonomy. The unified `.on()` facade arrives in M5.
+// event taxonomy. M4 adds SASL (PLAIN/EXTERNAL) and the `account-notify`
+// dynamic. The unified `.on()` facade arrives in M5.
 
 // High-level facade
 export { IrcClient, type ClientState, type IrcClientInternals } from "./IrcClient.ts";
@@ -34,6 +35,7 @@ export type {
   QuitEvent,
   KickEvent,
   NickEvent,
+  AccountEvent,
   ModeEvent,
   TopicEvent,
   NamesEvent,
@@ -125,6 +127,17 @@ export {
   type RegistrationResult,
   type RegistrationDeps,
 } from "./protocol/registration.ts";
+export {
+  SaslSession,
+  plain,
+  external,
+  mechanismFor,
+  chunkSaslResponse,
+  encodeBase64,
+  decodeBase64,
+  type SaslMechanism,
+  type SaslStep,
+} from "./protocol/sasl.ts";
 
 // Re-export the message intermediate representation for convenience.
 export type { Message, Source, Tags } from "@mojo-jojo/irc-message";

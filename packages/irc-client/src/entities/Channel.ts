@@ -4,6 +4,7 @@ import { MemberList } from "./MemberList.ts";
 import type { Server } from "./Server.ts";
 import type { ModeChange } from "../protocol/modeParser.ts";
 import type {
+  AccountEvent,
   ActionEvent,
   ChannelEvent,
   JoinEvent,
@@ -89,6 +90,10 @@ export class Channel extends ReactiveEntity<ChannelEvent> {
   }
   get names$(): Observable<NamesEvent> {
     return this.stream("names");
+  }
+  /** Account (login/logout) changes for members of this channel (`account-notify`). */
+  get accountChanges$(): Observable<AccountEvent> {
+    return this.stream("account");
   }
 
   /** @internal Set the topic and its provenance. */

@@ -255,9 +255,9 @@ export class IrcClient {
       password: options.password,
       desiredCaps: options.caps,
       altNicks: options.altNicks,
-      // SASL is requested + performed in M4; M2 never authenticates, so `sasl`
-      // is dropped during capability reconciliation.
-      saslRequested: false,
+      // SASL: when credentials are configured, `register` keeps the `sasl` cap in
+      // the requested set and runs the AUTHENTICATE exchange before CAP END.
+      sasl: options.sasl,
       timeoutMs: options.registrationTimeoutMs,
     };
   }
@@ -342,6 +342,11 @@ export class IrcClient {
           this.#nick = result.nick;
           this.#capabilities = result.capabilities;
           store.server.setCaps(result.capabilities.enabled);
+          // A successful SASL login tells us our own services account up-front
+          // (before any account-tag/account-notify traffic).
+          if (result.account !== null) {
+            store.getOrCreateUser(result.nick).setAccount(result.account);
+          }
           this.#state = "registered";
           this.#emit({ type: "registered", nick: result.nick });
           // Signal success to retryWithBackoff (resetOnSuccess) so a later drop

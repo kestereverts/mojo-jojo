@@ -66,6 +66,8 @@ export class Dispatcher {
         return this.#kick(message);
       case "NICK":
         return this.#nick(message);
+      case "ACCOUNT":
+        return this.#account(message);
       case "MODE":
         return this.#mode(message);
       case "TOPIC":
@@ -325,6 +327,30 @@ export class Dispatcher {
     });
     renamed.user[EMIT](event);
     for (const channel of renamed.channels) channel[EMIT](event);
+    return event;
+  }
+
+  /**
+   * `account-notify`: `:nick!user@host ACCOUNT <account>` (`*` = logged out).
+   * Updates the user's account and routes an {@link AccountEvent} to the user and
+   * every channel we share with them. Ignored for untracked users.
+   */
+  #account(message: Message): IrcEvent | null {
+    const source = message.source;
+    if (source === null || !this.#isUserSource(source)) return null;
+    const user = this.#store.user(source.name);
+    if (!user) return null;
+    user.updateFromSource(source);
+    user.setAccount(message.params[0] ?? "*");
+    const channels = this.#store.channelsWithUser(source.name);
+    const event = factory.accountEvent(message, {
+      user,
+      account: user.account,
+      channels,
+      isSelf: this.#store.isSelf(source.name),
+    });
+    user[EMIT](event);
+    for (const channel of channels) channel[EMIT](event);
     return event;
   }
 

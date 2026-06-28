@@ -1,5 +1,6 @@
 import type { Message } from "@mojo-jojo/irc-message";
 import type {
+  AccountEvent,
   ActionEvent,
   BaseEvent,
   JoinEvent,
@@ -68,6 +69,10 @@ export function kickEvent(message: Message, fields: Fields<KickEvent>): KickEven
 
 export function nickEvent(message: Message, fields: Fields<NickEvent>): NickEvent {
   return { type: "nick", ...baseEvent(message), ...fields };
+}
+
+export function accountEvent(message: Message, fields: Fields<AccountEvent>): AccountEvent {
+  return { type: "account", ...baseEvent(message), ...fields };
 }
 
 export function modeEvent(message: Message, fields: Fields<ModeEvent>): ModeEvent {

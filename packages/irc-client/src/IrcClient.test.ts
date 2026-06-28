@@ -309,3 +309,91 @@ describe("IrcClient — state + events (M3)", () => {
     client.quit();
   });
 });
+
+describe("IrcClient — SASL + P1 caps (M4)", () => {
+  test("authenticates with SASL PLAIN before completing registration", async () => {
+    const mock = new MockTransport();
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps: ["sasl"],
+      sasl: { mechanism: "PLAIN", username: "mojo", password: "hunter2" },
+      floodDelayMs: 0,
+    });
+    const connected = client.connect();
+    await waitFor(() => mock.written.some((l) => l.startsWith("USER")));
+
+    mock.receiveLine(":irc CAP * LS :sasl=PLAIN,EXTERNAL");
+    await waitFor(() => mock.written.includes("CAP REQ sasl\r\n"));
+    mock.receiveLine(":irc CAP mojo ACK :sasl");
+
+    // The exchange runs before CAP END.
+    await waitFor(() => mock.written.includes("AUTHENTICATE PLAIN\r\n"));
+    expect(mock.written.includes("CAP END\r\n")).toBe(false);
+    mock.receiveLine("AUTHENTICATE +");
+    await waitFor(() =>
+      mock.written.some((l) => l.startsWith("AUTHENTICATE ") && l !== "AUTHENTICATE PLAIN\r\n"),
+    );
+    mock.receiveLine(":irc 900 mojo mojo!u@h MojoAcct :now logged in");
+    mock.receiveLine(":irc 903 mojo :SASL authentication successful");
+    await waitFor(() => mock.written.includes("CAP END\r\n"));
+
+    mock.receiveLine(":irc 001 mojo :Welcome");
+    await connected;
+    expect(client.state).toBe("registered");
+    expect(client.enabledCaps.has("sasl")).toBe(true);
+    // The SASL login account (from 900) is recorded on our own user.
+    expect(client.user("mojo")?.account).toBe("MojoAcct");
+    client.quit();
+  });
+
+  test("a SASL failure aborts the connection (connect rejects)", async () => {
+    const mock = new MockTransport();
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps: ["sasl"],
+      sasl: { mechanism: "PLAIN", username: "mojo", password: "wrong" },
+      reconnect: { enabled: false },
+      floodDelayMs: 0,
+    });
+    let error: unknown;
+    const connected = client.connect().catch((e: unknown) => {
+      error = e;
+    });
+    await waitFor(() => mock.written.some((l) => l.startsWith("USER")));
+    mock.receiveLine(":irc CAP * LS :sasl");
+    mock.receiveLine(":irc CAP mojo ACK :sasl");
+    await waitFor(() => mock.written.includes("AUTHENTICATE PLAIN\r\n"));
+    mock.receiveLine("AUTHENTICATE +");
+    mock.receiveLine(":irc 904 mojo :SASL authentication failed");
+    await connected;
+    expect((error as Error).message).toContain("904");
+    expect(client.state).toBe("closed");
+  });
+
+  test("account-notify ACCOUNT updates state and emits an account event", async () => {
+    const { client, mock } = await registerClient();
+    const events: IrcEvent[] = [];
+    client.events$.subscribe((e) => events.push(e));
+
+    mock.receiveLine(":irc 005 mojo PREFIX=(ov)@+ CHANTYPES=# :are supported");
+    mock.receiveLine(":mojo!u@h JOIN #mojo2");
+    mock.receiveLine(":grace!g@h JOIN #mojo2");
+    await waitFor(() => client.channel("#mojo2")?.members.has("grace") === true);
+
+    mock.receiveLine(":grace!g@h ACCOUNT graceAcct");
+    await waitFor(() => events.some((e) => e.type === "account"));
+    const acct = events.find((e) => e.type === "account");
+    if (acct?.type === "account") {
+      expect(acct.user.nick).toBe("grace");
+      expect(acct.account).toBe("graceAcct");
+    }
+    expect(client.user("grace")?.account).toBe("graceAcct");
+    client.quit();
+  });
+});
