@@ -11,7 +11,7 @@ type SocketHandlers = Bun.TCPSocketConnectOptions["socket"];
  * promise open until {@link Harness.releaseConnect} is called (to test the
  * close-during-connect race).
  */
-function makeHarness(opts: { deferConnect?: boolean } = {}): {
+function makeHarness(opts: { deferConnect?: boolean; tls?: boolean } = {}): {
   transport: BunSocketTransport;
   writes: Array<string | Uint8Array>;
   fakeSocket: Bun.Socket;
@@ -44,7 +44,12 @@ function makeHarness(opts: { deferConnect?: boolean } = {}): {
     return fakeSocket;
   };
 
-  const transport = new BunSocketTransport({ hostname: "irc.test", port: 6667, connector });
+  const transport = new BunSocketTransport({
+    hostname: "irc.test",
+    port: opts.tls ? 6697 : 6667,
+    tls: opts.tls,
+    connector,
+  });
 
   return {
     transport,
@@ -189,5 +194,52 @@ describe("BunSocketTransport", () => {
     h.releaseConnect(); // let the connect resolve
     await connecting;
     expect(h.endCount()).toBe(1); // honoured the pending close
+  });
+
+  const flush = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+  test("TLS connect() does not resolve until the handshake completes", async () => {
+    const h = makeHarness({ tls: true });
+    let resolved = false;
+    const connecting = h.transport.connect().then(() => {
+      resolved = true;
+    });
+    await flush();
+    // The connector resolved (socket assigned) but the handshake hasn't fired:
+    // Bun would drop writes here, so connect() must still be pending.
+    expect(resolved).toBe(false);
+    h.handlers().handshake!(h.fakeSocket, true, undefined as unknown as Error);
+    await connecting;
+    expect(resolved).toBe(true);
+    // Now writable.
+    h.transport.write("NICK mojo\r\n");
+    expect(h.writes).toEqual(["NICK mojo\r\n"]);
+  });
+
+  test("a failed TLS handshake rejects connect() and errors bytes$", async () => {
+    const h = makeHarness({ tls: true });
+    const done = firstValueFrom(h.transport.bytes$.pipe(toArray()));
+    const connecting = h.transport.connect();
+    await flush();
+    const verifyError = new Error("self-signed certificate");
+    h.handlers().handshake!(h.fakeSocket, false, verifyError);
+    let caught: unknown;
+    await connecting.catch((err: unknown) => {
+      caught = err;
+    });
+    expect(caught).toBe(verifyError);
+    let bytesErr: unknown;
+    await done.catch((err: unknown) => {
+      bytesErr = err;
+    });
+    expect(bytesErr).toBeInstanceOf(TransportClosedError);
+  });
+
+  test("plaintext connect() resolves without waiting for a handshake", async () => {
+    // The mock connector never fires `open`/`handshake`; plaintext must not gate.
+    const h = makeHarness();
+    await h.transport.connect();
+    h.transport.write("NICK mojo\r\n");
+    expect(h.writes).toEqual(["NICK mojo\r\n"]);
   });
 });

@@ -53,6 +53,21 @@ export class BunSocketTransport implements Transport {
   async connect(): Promise<void> {
     if (this.#socket) throw new Error("BunSocketTransport: already connected");
     const { hostname, port, tls } = this.#options;
+    const useTls = tls !== undefined && tls !== false;
+
+    // Bun silently drops writes issued before the TLS handshake completes, so for
+    // a TLS connection we must not report ready (resolve connect()) until the
+    // `handshake` callback fires — otherwise the very first registration burst is
+    // written into the void and the server times us out. Plaintext is writable as
+    // soon as the connector resolves, so it keeps the prior behaviour (no gate).
+    let markReady: (error?: Error) => void = () => {};
+    const ready: Promise<void> = useTls
+      ? new Promise<void>((resolve, reject) => {
+          markReady = (error) => (error ? reject(error) : resolve());
+        })
+      : Promise.resolve();
+    ready.catch(() => {}); // pre-empt an unhandled rejection if connect() throws first
+
     let socket: Bun.Socket;
     try {
       socket = await this.#connector({
@@ -63,19 +78,34 @@ export class BunSocketTransport implements Transport {
           data: (_socket, data) => {
             this.#bytes.next(data);
           },
+          // TLS only: the connection is writable once the handshake succeeds.
+          handshake: (_socket, success, verifyError) => {
+            if (success) {
+              markReady();
+            } else {
+              const error =
+                verifyError instanceof Error ? verifyError : new Error("TLS handshake failed");
+              this.#settle({ local: false, error });
+              markReady(error);
+            }
+          },
           // A remote close/FIN we did not initiate is abnormal: carry any error
           // arg and let #settle decide (local => complete, otherwise => error).
           close: (_socket, error) => {
             this.#settle(error ? { local: this.#closing, error } : { local: this.#closing });
+            markReady(error ?? new Error("connection closed before it was ready"));
           },
           end: () => {
             this.#settle({ local: this.#closing });
+            markReady(new Error("connection ended before it was ready"));
           },
           error: (_socket, error) => {
             this.#settle({ local: false, error });
+            markReady(error);
           },
           connectError: (_socket, error) => {
             this.#settle({ local: false, error });
+            markReady(error);
           },
         },
       });
@@ -84,13 +114,18 @@ export class BunSocketTransport implements Transport {
       // fires first and settles us; #settle's guard makes this idempotent. If a
       // connector rejects *without* firing connectError, settle here so the
       // streams never dangle. Re-throw so the caller's connect() still rejects.
-      this.#settle({ local: false, error: error instanceof Error ? error : new Error(String(error)) });
+      const err = error instanceof Error ? error : new Error(String(error));
+      this.#settle({ local: false, error: err });
+      markReady(err);
       throw error;
     }
     this.#socket = socket;
     // close() may have been called while the connect promise was in flight;
     // honour it now so we never leak a live socket past teardown.
     if (this.#closing) socket.end();
+    // Block until the socket can actually send. For plaintext this is already
+    // resolved; for TLS it waits for the handshake (or rejects if it fails).
+    await ready;
   }
 
   write(data: Uint8Array | string): void {
