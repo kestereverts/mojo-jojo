@@ -1,23 +1,6 @@
 import { Token, EOF, TagsStart, TagClientKeyStart, TagKey, TagValueStart, TagValue, TagSeparator, Separator, PrefixStart, PrefixName, PrefixUserStart, PrefixUser, PrefixHostStart, PrefixHost, Command, TrailingParameterStart, TrailingParameter, MiddleParameter } from './Token'
-
-const CHAR_AT = '@'.charCodeAt(0)
-const CHAR_SPACE = ' '.charCodeAt(0)
-const CHAR_PLUS = '+'.charCodeAt(0)
-const CHAR_EQUALS = '='.charCodeAt(0)
-const CHAR_SEMICOLON = ';'.charCodeAt(0)
-const CHAR_COLON = ':'.charCodeAt(0)
-const CHAR_EXCL = '!'.charCodeAt(0)
-
-const isTagKeyChar = (c: number) =>
-  c !== CHAR_EQUALS && c !== CHAR_SPACE && c !== CHAR_SEMICOLON
-
-const isTagValueChar = (c: number) => c !== CHAR_SPACE && c !== CHAR_SEMICOLON
-
-const isPrefixNameChar = (c: number) =>
-  c !== CHAR_SPACE && c !== CHAR_AT && c !== CHAR_EXCL
-
-const isPrefixUserChar = (c: number) =>
-  c !== CHAR_SPACE && c !== CHAR_AT
+import { CHAR_AT, CHAR_SPACE, CHAR_PLUS, CHAR_EQUALS, CHAR_SEMICOLON, CHAR_COLON, CHAR_EXCL, isTagKeyChar, isTagValueChar, isPrefixNameChar, isPrefixUserChar } from './chars'
+import { LimitExceededError, UnexpectedCharAssertionError } from './errors'
 
 const eof = (tokens: Token[], pos: number) => {
   tokens.push(new EOF(pos))
@@ -349,43 +332,5 @@ export class Tokenizer {
         }
       }
     }
-  }
-}
-
-class LexerError extends Error {}
-
-class LimitExceededError extends LexerError {
-  public limitName: string;
-  public limitValue: number;
-  public pos: number;
-  public lastToken: Token | undefined
-
-  constructor (limitName: string, limitValue: number, pos: number, lastToken: Token | undefined) {
-    let lastTokenString = ''
-    if (lastToken !== null && typeof lastToken !== 'undefined') {
-      lastTokenString = ` while tokenizing ${lastToken.type}`
-    }
-    super(`Exceeded ${limitName} (${limitValue}) at position ${pos}${lastTokenString}.`)
-    this.limitName = limitName
-    this.limitValue = limitValue
-    this.pos = pos
-    this.lastToken = lastToken
-  }
-}
-
-class UnexpectedCharAssertionError extends LexerError {
-  public pos: number;
-  public char: number;
-  public lastToken: Token | undefined;
-
-  constructor (pos: number, char: number, lastToken: Token | undefined) {
-    let lastTokenString = ''
-    if (lastToken !== null && typeof lastToken !== 'undefined') {
-      lastTokenString = ` while tokenizing ${lastToken.type}`
-    }
-    super(`Unexpected character 0x${char.toString(16)} ('${String.fromCharCode(char)}') at position ${pos}${lastTokenString}.`)
-    this.pos = pos
-    this.char = char
-    this.lastToken = lastToken
   }
 }

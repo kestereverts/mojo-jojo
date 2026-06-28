@@ -31,6 +31,32 @@ end}` spans; the [Parser](./src/parser/Parser.ts) decodes those spans and
 unescapes tag values into a `Message`. Building is a direct serializer — not an
 inverse tokenizer.
 
+## Tokenizer backends
+
+The tokenizer is pluggable. `parseMessage` defaults to **`js-fast`**, an
+allocation-free tokenizer (~9–17× faster than the original `reference` one);
+all backends produce identical messages.
+
+```ts
+// synchronous: 'js-fast' (default) or 'reference'
+parseMessage(line, { backend: "reference" });
+
+// any backend, including the WASM ones (async instantiation):
+import { createIrcParser } from "@mojo-jojo/irc-message";
+const parser = await createIrcParser({ backend: "wasm-rust-simd" });
+parser.parseMessage(line);
+```
+
+Backends: `reference`, `js-fast`, `wasm-wat` (hand-written WebAssembly text),
+`wasm-rust`, `wasm-rust-simd`. The WASM `.wasm` artifacts are committed; rebuild
+them from source with `bun run build:wasm` (needs `wabt`, `binaryen`, and the
+`wasm32-unknown-unknown` Rust target). Sources live in [native/](./native/).
+
+See [BENCHMARKS.md](./BENCHMARKS.md) for the full race. Short version: `js-fast`
+wins for normal single-line IRC; `wasm-rust-simd` (batched, via
+`WasmTokenizer.tokenizeBatchInto`) only pulls ahead on large buffers of
+long-field lines.
+
 ## Intermediate representation
 
 A [`Message`](./src/types.ts) mirrors the IRCv3 message grammar:

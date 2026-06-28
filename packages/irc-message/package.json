@@ -14,6 +14,8 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "build": "bun build src/index.ts --outdir dist --target bun",
+    "build:wasm": "bun run native/build.ts",
+    "bench": "bun run bench/tokenize.bench.ts && bun run bench/batch.bench.ts",
     "clean": "rm -rf dist"
   }
 }
