@@ -1,0 +1,19 @@
+{
+  "name": "@mojo-jojo/irc-message",
+  "version": "0.1.0",
+  "description": "IRCv3 message parsing and serialization (raw line <-> intermediate representation).",
+  "private": true,
+  "type": "module",
+  "module": "src/index.ts",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "clean": "rm -rf dist"
+  }
+}
