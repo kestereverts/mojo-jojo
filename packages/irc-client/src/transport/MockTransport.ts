@@ -9,12 +9,27 @@ import { TransportClosedError, type Transport, type TransportClose } from "./Tra
  * Use {@link close} for a clean local shutdown or {@link fail} to simulate an
  * abnormal drop (which errors `bytes$`).
  */
+export interface MockTransportOptions {
+  /**
+   * When false, {@link MockTransport.connect} stays pending until
+   * {@link MockTransport.completeConnect} is called — exercises close/quit
+   * during an in-flight connect. Defaults to true (connect resolves at once).
+   */
+  readonly autoConnect?: boolean;
+}
+
 export class MockTransport implements Transport {
   readonly #bytes = new Subject<Uint8Array>();
   readonly #closed = new Subject<TransportClose>();
   readonly #encoder = new TextEncoder();
   readonly #decoder = new TextDecoder();
+  readonly #autoConnect: boolean;
+  #connectResolve: (() => void) | null = null;
   #settled = false;
+
+  constructor(options: MockTransportOptions = {}) {
+    this.#autoConnect = options.autoConnect ?? true;
+  }
 
   /** Every payload passed to {@link write}, decoded to a UTF-8 string. */
   readonly written: string[] = [];
@@ -25,8 +40,16 @@ export class MockTransport implements Transport {
   readonly closed$: Observable<TransportClose> = this.#closed.asObservable();
 
   connect(): Promise<void> {
-    // No-op: the mock is "connected" immediately.
-    return Promise.resolve();
+    if (this.#autoConnect) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      this.#connectResolve = resolve;
+    });
+  }
+
+  /** Resolve a deferred {@link connect} (only meaningful with `autoConnect: false`). */
+  completeConnect(): void {
+    this.#connectResolve?.();
+    this.#connectResolve = null;
   }
 
   write(data: Uint8Array | string): void {
