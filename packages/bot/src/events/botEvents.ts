@@ -1,0 +1,108 @@
+import { Subject, type Observable, type Subscription } from "rxjs";
+import type { PrivmsgEvent } from "@mojo-jojo/irc-client";
+
+/** Phase of a module lifecycle failure. */
+export type ModulePhase = "config" | "setup" | "dispose";
+/** Why a command was not run. */
+export type CommandDeniedReason = "permission" | "cooldown" | "ignored";
+
+/** Framework-domain events (distinct from IRC protocol traffic). */
+export type BotEvent =
+  | { readonly type: "started" }
+  | { readonly type: "stopped"; readonly reason?: string }
+  | { readonly type: "moduleLoaded"; readonly name: string }
+  | { readonly type: "moduleError"; readonly name: string; readonly phase: ModulePhase; readonly error: Error }
+  | { readonly type: "commandInvoked"; readonly command: string; readonly event: PrivmsgEvent }
+  | { readonly type: "commandDenied"; readonly command: string; readonly reason: CommandDeniedReason; readonly event: PrivmsgEvent }
+  | { readonly type: "commandError"; readonly command: string; readonly event: PrivmsgEvent; readonly error: Error };
+
+export type Unsubscribe = () => void;
+export type BotEventListener<T extends BotEvent["type"]> = (event: Extract<BotEvent, { type: T }>) => void;
+
+interface Entry {
+  readonly type: BotEvent["type"];
+  // The caller's original handler (so `off(type, handler)` works even after `once` wrapping).
+  readonly handler: (event: never) => void;
+  readonly sub: Subscription;
+}
+
+/**
+ * Subject-backed hub for {@link BotEvent}s. The primary surface is the RxJS
+ * {@link events$} stream; {@link on}/{@link once}/{@link off} are a thin
+ * EventEmitter-style façade layered over it (internals stay all-RxJS).
+ */
+const NOOP: Unsubscribe = () => {};
+
+export class BotEventHub {
+  readonly #subject = new Subject<BotEvent>();
+  readonly #entries: Entry[] = [];
+  readonly #onListenerError: (error: unknown) => void;
+
+  constructor(
+    onListenerError: (error: unknown) => void = (error) =>
+      console.error("[bot] event listener threw:", error),
+  ) {
+    this.#onListenerError = onListenerError;
+  }
+
+  readonly events$: Observable<BotEvent> = this.#subject.asObservable();
+
+  emit(event: BotEvent): void {
+    this.#subject.next(event);
+  }
+
+  on<T extends BotEvent["type"]>(type: T, handler: BotEventListener<T>): Unsubscribe {
+    const sub = this.#subject.subscribe((event) => {
+      if (event.type !== type) return;
+      try {
+        handler(event as Extract<BotEvent, { type: T }>);
+      } catch (error) {
+        this.#onListenerError(error);
+      }
+    });
+    if (sub.closed) return NOOP; // already completed (post-stop): no-op, don't retain
+    const entry: Entry = { type, handler: handler as (event: never) => void, sub };
+    this.#entries.push(entry);
+    return () => this.#remove(entry);
+  }
+
+  once<T extends BotEvent["type"]>(type: T, handler: BotEventListener<T>): Unsubscribe {
+    let fired = false;
+    let entry: Entry | undefined;
+    const sub = this.#subject.subscribe((event) => {
+      if (event.type !== type || fired) return;
+      fired = true;
+      if (entry) this.#remove(entry);
+      try {
+        handler(event as Extract<BotEvent, { type: T }>);
+      } catch (error) {
+        this.#onListenerError(error);
+      }
+    });
+    if (sub.closed) return NOOP;
+    entry = { type, handler: handler as (event: never) => void, sub };
+    this.#entries.push(entry);
+    return () => this.#remove(entry!);
+  }
+
+  off<T extends BotEvent["type"]>(type: T, handler: BotEventListener<T>): void {
+    const entry = this.#entries.find(
+      (e) => e.type === type && e.handler === (handler as (event: never) => void),
+    );
+    if (entry) this.#remove(entry);
+  }
+
+  /** Complete the stream (and detach every façade listener). Called on bot shutdown. */
+  complete(): void {
+    for (const entry of this.#entries.splice(0)) entry.sub.unsubscribe();
+    this.#subject.complete();
+  }
+
+  #remove(entry: Entry): void {
+    const index = this.#entries.indexOf(entry);
+    if (index >= 0) {
+      this.#entries.splice(index, 1);
+      entry.sub.unsubscribe();
+    }
+  }
+}
