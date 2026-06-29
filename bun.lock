@@ -14,6 +14,14 @@
       "name": "@mojo-jojo/app",
       "version": "0.1.0",
     },
+    "packages/bot": {
+      "name": "@mojo-jojo/bot",
+      "version": "0.1.0",
+      "dependencies": {
+        "@mojo-jojo/irc-client": "workspace:*",
+        "rxjs": "^7.8.0",
+      },
+    },
     "packages/irc-client": {
       "name": "@mojo-jojo/irc-client",
       "version": "0.1.0",
@@ -58,6 +66,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@mojo-jojo/app": ["@mojo-jojo/app@workspace:apps/app"],
+
+    "@mojo-jojo/bot": ["@mojo-jojo/bot@workspace:packages/bot"],
 
     "@mojo-jojo/irc-client": ["@mojo-jojo/irc-client@workspace:packages/irc-client"],
 
