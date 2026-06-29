@@ -78,6 +78,15 @@ export interface IrcClientOptions {
   readonly sasl?: SaslOptions;
   /** Capabilities to request: an explicit list, or `"all"` for everything advertised. */
   readonly caps?: readonly string[] | "all";
+  /**
+   * When `true`, automatically issue a {@link IrcClient.who} for each channel we
+   * join, so members already present (whose `extended-join` we never saw) are
+   * backfilled — accounts/realname/host/away (and, with WHOX, more). Default
+   * `false`; one extra WHO per self-join, flood-queued. Best-effort: if the
+   * outbound queue is full (e.g. a burst of joins) the backfill WHO is dropped
+   * rather than throwing.
+   */
+  readonly whoOnJoin?: boolean;
   /** Parser backend (default `"js-fast"`). */
   readonly backend?: Backend;
   /** Reconnection policy overrides. */
@@ -126,6 +135,7 @@ export interface ResolvedOptions {
   readonly password: string | undefined;
   readonly sasl: SaslOptions | undefined;
   readonly caps: readonly string[] | "all";
+  readonly whoOnJoin: boolean;
   readonly backend: Backend;
   readonly reconnect: ReconnectPolicy;
   readonly floodDelayMs: number;
@@ -172,6 +182,7 @@ export function resolveOptions(options: IrcClientOptions): ResolvedOptions {
     password: options.password,
     sasl: options.sasl,
     caps: options.caps ?? DEFAULT_CAPS,
+    whoOnJoin: options.whoOnJoin ?? false,
     backend: options.backend ?? "js-fast",
     reconnect,
     floodDelayMs: options.floodDelayMs ?? 500,

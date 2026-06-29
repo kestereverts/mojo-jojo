@@ -50,6 +50,7 @@ suite("live smoke: irc-client end-to-end (IRC_SMOKE=1)", () => {
         username: "mojo",
         realName: "mojo-jojo smoke",
         reconnect: { enabled: false },
+        whoOnJoin: true, // auto-WHO each channel on join (exercised below)
         // Short keepalive so the heartbeat actually fires within the test window.
         pingIntervalMs: 4000,
         pingTimeoutMs: 8000,
@@ -124,14 +125,13 @@ suite("live smoke: irc-client end-to-end (IRC_SMOKE=1)", () => {
           }
         }
 
-        // WHOX (M-follow-on): if the server supports it, who() sends a WHOX query
-        // and the 354 replies enrich members (incl. their services account).
+        // WHOX + whoOnJoin: with WHOX advertised, the auto-WHO fired on our JOIN
+        // above sends a WHOX query, and the 354 replies enrich members (incl. the
+        // services account). Confirm those replies arrived without a manual who().
         if (client.server?.isupport.whox === true) {
-          const before = whoxReplies;
-          client.who(CHANNEL);
-          await waitFor(() => whoxReplies > before, 15000, "WHOX 354 reply");
+          await waitFor(() => whoxReplies > 0, 15000, "auto whoOnJoin WHOX 354 reply");
           console.log(
-            `[smoke] WHOX returned ${whoxReplies - before} reply(ies); ` +
+            `[smoke] whoOnJoin -> ${whoxReplies} WHOX reply(ies); ` +
               `self account=${client.user(nick)?.account ?? "(none)"}`,
           );
         } else {

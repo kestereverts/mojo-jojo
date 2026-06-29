@@ -51,7 +51,7 @@ import { resolveOptions, type IrcClientOptions, type ResolvedOptions } from "./o
 import type { Transport } from "./transport/Transport.ts";
 import { EventFacade, type Unsubscribe } from "./entities/EventFacade.ts";
 import type { LifecycleEvent } from "./events/lifecycle.ts";
-import type { ClientEvent, IrcEvent } from "./events/types.ts";
+import type { ClientEvent, IrcEvent, JoinEvent } from "./events/types.ts";
 import { StateStore } from "./state/StateStore.ts";
 import { Dispatcher } from "./state/dispatch.ts";
 import type { Server } from "./entities/Server.ts";
@@ -299,6 +299,28 @@ export class IrcClient {
         takeUntil(this.#teardown),
       )
       .subscribe((message) => this.#handleCapNotify(message));
+
+    // Optional WHO-on-join: backfill members already present on each channel we
+    // join (whose `extended-join` we never saw) with one WHO/WHOX per self-join.
+    // Reconnect-stable: subscribes once to the long-lived event stream.
+    if (this.#options.whoOnJoin) {
+      this.#events
+        .pipe(
+          filter((event): event is JoinEvent => event.type === "join" && event.isSelf),
+          takeUntil(this.#teardown),
+        )
+        .subscribe((event) => {
+          // Best-effort: who() goes through the throwing flood queue. A burst of
+          // self-JOINs (incl. a hostile server forging `:me JOIN #x`) could fill
+          // it; drop the backfill rather than let the throw escape the
+          // subscription and crash the process.
+          try {
+            this.who(event.channel.name);
+          } catch {
+            // queue full / send rejected — skip this best-effort backfill
+          }
+        });
+    }
 
     const connection$ = defer(() => this.#runAttempt()).pipe(
       retryWithBackoff<void>(this.#options.reconnect, {

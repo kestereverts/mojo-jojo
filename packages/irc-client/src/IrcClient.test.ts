@@ -1256,3 +1256,48 @@ describe("IrcClient — WHOX", () => {
     client.quit();
   });
 });
+
+describe("IrcClient — whoOnJoin", () => {
+  test("issues a WHO for each channel on self-join when enabled", async () => {
+    const { client, mock } = await registerClient({ whoOnJoin: true });
+    mock.receiveLine(":mojo!u@h JOIN #one"); // two distinct self-joins
+    mock.receiveLine(":mojo!u@h JOIN #two");
+    await waitFor(() => mock.written.some((l) => l.startsWith("WHO #one")));
+    await waitFor(() => mock.written.some((l) => l.startsWith("WHO #two")));
+    client.quit();
+  });
+
+  test("a burst of self-joins never throws when the flood queue fills", async () => {
+    // who() uses the throwing flood queue; a self-JOIN burst (incl. forged ones)
+    // must degrade to dropping the backfill, not crash via an uncaught throw.
+    const { client, mock } = await registerClient({
+      whoOnJoin: true,
+      maxQueueDepth: 1,
+      floodDelayMs: 1_000_000, // keep the single queued send in-flight
+    });
+    for (let i = 0; i < 5; i++) mock.receiveLine(`:mojo!u@h JOIN #c${i}`);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(client.state).toBe("registered"); // survived; no uncaught exception
+    client.quit();
+  });
+
+  test("does not WHO on join when disabled (the default)", async () => {
+    const { client, mock } = await registerClient();
+    mock.receiveLine(":mojo!u@h JOIN #chan"); // self join, but feature off
+    mock.receiveLine(":alice!a@h JOIN #chan"); // and someone else
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(mock.written.some((l) => l.startsWith("WHO"))).toBe(false);
+    client.quit();
+  });
+
+  test("only a self-join triggers it, not a foreign join", async () => {
+    const { client, mock } = await registerClient({ whoOnJoin: true });
+    mock.receiveLine(":mojo!u@h JOIN #chan"); // self -> one WHO
+    await waitFor(() => mock.written.some((l) => l.startsWith("WHO #chan")));
+    const before = mock.written.length;
+    mock.receiveLine(":bob!b@h JOIN #chan"); // foreign -> no extra WHO
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(mock.written.slice(before).some((l) => l.startsWith("WHO"))).toBe(false);
+    client.quit();
+  });
+});
