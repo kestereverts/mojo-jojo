@@ -110,6 +110,13 @@ describe("parseIsupport", () => {
     expect(Object.keys(s.raw).length).toBeLessThanOrEqual(256);
   });
 
+  test("detects WHOX support from the bare WHOX token", () => {
+    expect(parseIsupport(["WHOX", "CHANTYPES=#"]).whox).toBe(true);
+    expect(parseIsupport(["CHANTYPES=#"]).whox).toBe(false);
+    // negation turns it back off
+    expect(parseIsupport(["-WHOX"], parseIsupport(["WHOX"])).whox).toBe(false);
+  });
+
   test("EMPTY_ISUPPORT carries library defaults", () => {
     expect(EMPTY_ISUPPORT.chanTypes).toBe("#&");
     expect(EMPTY_ISUPPORT.caseMapping).toBe("rfc1459");

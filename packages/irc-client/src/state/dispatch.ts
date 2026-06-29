@@ -5,6 +5,7 @@ import type { IrcEvent } from "../events/types.ts";
 import { EMIT } from "../entities/internal.ts";
 import { isChannelName } from "../isupport/parseIsupport.ts";
 import { parseModeChanges, type ModeChange } from "../protocol/modeParser.ts";
+import { parseWhoxReply } from "../protocol/whox.ts";
 import * as numerics from "../protocol/numerics.ts";
 import * as factory from "../events/factory.ts";
 
@@ -130,6 +131,8 @@ export class Dispatcher {
         return this.#standardReply(message, "NOTE");
       case numerics.RPL_WHOREPLY:
         return this.#whoReply(message);
+      case numerics.RPL_WHOSPCRPL:
+        return this.#whoxReply(message);
       default:
         return null;
     }
@@ -593,12 +596,43 @@ export class Dispatcher {
     if (!user) return null;
     user.updateFromSource({ name: nick, user: message.params[2], host: message.params[3] });
     const flags = message.params[6];
-    if (flags !== undefined) user.setAway(flags.includes("G"));
+    // The away marker is the leading flag (`H` here / `G` gone), not anywhere.
+    if (flags !== undefined) user.setAway(flags.startsWith("G"));
     const trailing = message.params[7];
     if (trailing !== undefined) {
       const space = trailing.indexOf(" ");
       const realName = space === -1 ? "" : trailing.slice(space + 1);
       if (realName !== "") user.setRealName(realName);
+    }
+    return null;
+  }
+
+  /**
+   * `354` RPL_WHOSPCRPL (WHOX): parsed against our fixed field spec (token,
+   * channel, user, host, nick, flags, account, realname). Enriches the already-
+   * known user — host/user/realname, away (`G`), and, unlike `352`, the services
+   * account (`0` = logged out) — and applies the member's channel status prefixes
+   * from the flags. Replies tagged with another tool's token are ignored, and no
+   * users are created from WHO output.
+   */
+  #whoxReply(message: Message): null {
+    const reply = parseWhoxReply(message);
+    if (reply === null) return null;
+    const { channel, user, host, nick, flags, account, realName } = reply;
+    if (nick === undefined) return null;
+    const u = this.#store.user(nick);
+    if (!u) return null;
+    u.updateFromSource({ name: nick, user, host });
+    if (flags !== undefined) u.setAway(flags.startsWith("G"));
+    // `0` is WHOX's "logged out"; map it to `setAccount`'s logged-out sentinel.
+    if (account !== undefined) u.setAccount(account === "0" ? "*" : account);
+    if (realName !== undefined && realName !== "") u.setRealName(realName);
+    // Apply the member's channel status from the flags (e.g. `@`,`+`);
+    // applyPrefixChars ignores the non-prefix flag chars (`H`/`G`/`*`). Additive
+    // like `353`/NAMES: it grants the prefixes WHO reports but doesn't revoke a
+    // status lost since — `MODE` remains the authoritative source for revocation.
+    if (channel !== undefined && channel !== "*" && flags !== undefined) {
+      this.#store.channel(channel)?.members.get(nick)?.applyPrefixChars(flags);
     }
     return null;
   }

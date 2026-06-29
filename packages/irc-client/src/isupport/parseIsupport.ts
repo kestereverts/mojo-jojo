@@ -52,6 +52,8 @@ export interface ISupport {
   readonly network: string | null;
   /** Max mode changes with parameters per MODE line (ISUPPORT `MODES`), or null. */
   readonly modesPerLine: number | null;
+  /** Whether the server supports WHOX (the `WHOX` ISUPPORT token, no value). */
+  readonly whox: boolean;
   /**
    * Every token seen, in raw form: `string` for `KEY=value`, `true` for a bare
    * `KEY` flag. Negated (`-KEY`) tokens are removed. The typed fields above are
@@ -83,6 +85,7 @@ export const EMPTY_ISUPPORT: ISupport = {
   caseMapping: "rfc1459",
   network: null,
   modesPerLine: null,
+  whox: false,
   raw: {},
 };
 
@@ -180,6 +183,7 @@ function deriveISupport(raw: Record<string, string | true>): ISupport {
     caseMapping: toCaseMapping(typeof caseMapping === "string" ? caseMapping : undefined),
     network: typeof network === "string" && network !== "" ? network : null,
     modesPerLine,
+    whox: raw["WHOX"] !== undefined, // advertised as a bare token (no value)
     raw,
   };
 }

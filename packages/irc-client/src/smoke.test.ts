@@ -59,11 +59,12 @@ suite("live smoke: irc-client end-to-end (IRC_SMOKE=1)", () => {
       });
       const events: IrcEvent[] = [];
       client.events$.subscribe((e) => events.push(e));
-      // Capture raw PONGs: the server's reply to our keepalive PING proves the
-      // active-keepalive heartbeat round-trips against a real server.
+      // Capture raw PONGs (keepalive heartbeat) and 354s (WHOX replies).
       let pongs = 0;
+      let whoxReplies = 0;
       client.messages$.subscribe((m) => {
         if (m.command === "PONG") pongs += 1;
+        if (m.command === "354") whoxReplies += 1;
       });
 
       try {
@@ -121,6 +122,20 @@ suite("live smoke: irc-client end-to-end (IRC_SMOKE=1)", () => {
           } catch (err) {
             console.log(`[smoke] labeled chathistory unavailable: ${(err as Error).message}`);
           }
+        }
+
+        // WHOX (M-follow-on): if the server supports it, who() sends a WHOX query
+        // and the 354 replies enrich members (incl. their services account).
+        if (client.server?.isupport.whox === true) {
+          const before = whoxReplies;
+          client.who(CHANNEL);
+          await waitFor(() => whoxReplies > before, 15000, "WHOX 354 reply");
+          console.log(
+            `[smoke] WHOX returned ${whoxReplies - before} reply(ies); ` +
+              `self account=${client.user(nick)?.account ?? "(none)"}`,
+          );
+        } else {
+          console.log("[smoke] server does not advertise WHOX; skipped");
         }
 
         // Active keepalive: idle past pingIntervalMs and confirm our PING was

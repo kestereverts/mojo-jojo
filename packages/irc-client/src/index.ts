@@ -139,6 +139,13 @@ export {
   type RegistrationDeps,
 } from "./protocol/registration.ts";
 export {
+  whoxQuery,
+  parseWhoxReply,
+  WHOX_TOKEN,
+  WHOX_FIELDS,
+  type WhoxReply,
+} from "./protocol/whox.ts";
+export {
   SaslSession,
   plain,
   external,

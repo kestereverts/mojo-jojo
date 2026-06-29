@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { parseMessage, type Message } from "@mojo-jojo/irc-message";
 import { MAX_CHANNELS, StateStore } from "./StateStore.ts";
 import { Dispatcher } from "./dispatch.ts";
+import { WHOX_TOKEN } from "../protocol/whox.ts";
 import type { IrcEvent } from "../events/types.ts";
 
 /** A dispatcher + store wired up, with a helper to feed raw lines. */
@@ -651,6 +652,45 @@ describe("dispatch — NICK collisions (non-conformant server)", () => {
     expect(h.feed(":alice!a@h NICK me")).toBeNull(); // refused — no event
     expect(h.store.user("me")?.isSelf).toBe(true); // our self user is preserved
     expect(h.store.user("alice")).toBeDefined(); // alice unchanged
+  });
+});
+
+describe("dispatch — WHOX (354)", () => {
+  // Our fixed WHOX layout: <client> <token> <channel> <user> <host> <nick> <flags> <account> :<realname>
+  test("354 enriches a known user (account/realname/host/away) and member status", () => {
+    const h = harness();
+    register(h); // PREFIX=(qaohv)~&@%+
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":alice!a@h JOIN #chan");
+    h.feed(`:irc 354 me ${WHOX_TOKEN} #chan aliceUser alice.host alice G@ aliceAcct :Alice Real`);
+
+    const alice = h.store.user("alice")!;
+    expect(alice.account).toBe("aliceAcct"); // WHOX gives the account (352 can't)
+    expect(alice.realName).toBe("Alice Real");
+    expect(alice.username).toBe("aliceUser");
+    expect(alice.host).toBe("alice.host");
+    expect(alice.away).toBe(true); // flags start with G
+    expect(h.store.channel("#chan")?.members.get("alice")?.isOp()).toBe(true); // @ in flags
+  });
+
+  test("354 account '0' means logged out", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":alice!a@h JOIN #chan");
+    h.feed(`:irc 354 me ${WHOX_TOKEN} #chan u host alice H 0 :Real`);
+    expect(h.store.user("alice")?.account).toBeNull();
+  });
+
+  test("354 with a foreign token is ignored, and WHOX creates no phantom users", () => {
+    const h = harness();
+    register(h);
+    // Different token -> unknown layout -> ignored.
+    expect(h.feed(":irc 354 me 5 #chan u host nobody H acct :Real")).toBeNull();
+    expect(h.store.user("nobody")).toBeUndefined();
+    // Our token, but an untracked nick -> no phantom created.
+    h.feed(`:irc 354 me ${WHOX_TOKEN} #chan u host ghost H acct :Real`);
+    expect(h.store.user("ghost")).toBeUndefined();
   });
 });
 

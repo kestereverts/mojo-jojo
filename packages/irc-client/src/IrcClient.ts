@@ -44,6 +44,7 @@ import {
   reconcileCaps,
   type CapabilityStore,
 } from "./protocol/capabilities.ts";
+import { whoxQuery } from "./protocol/whox.ts";
 import { capEvent } from "./events/factory.ts";
 import { retryWithBackoff, type BackoffDeps } from "./reconnect.ts";
 import { resolveOptions, type IrcClientOptions, type ResolvedOptions } from "./options.ts";
@@ -484,9 +485,16 @@ export class IrcClient {
     this.send(whoisCommand(target));
   }
 
-  /** Request a `WHO` listing for a channel or user mask. */
+  /**
+   * Request a `WHO` listing for a channel or user mask. When the server supports
+   * WHOX (ISUPPORT `WHOX`), this sends a WHOX query so the reply also carries each
+   * user's services account, real name, host, away status, and channel status —
+   * which a plain `WHO`/`352` can't provide. Those land on the resolved
+   * {@link User}/{@link Member} as the `354` replies arrive; otherwise a plain
+   * `WHO` is sent and `352` enrichment applies.
+   */
   who(mask: string): void {
-    this.send(whoCommand(mask));
+    this.send(this.#store?.server.isupport.whox === true ? whoxQuery(mask) : whoCommand(mask));
   }
 
   /** Request a channel's `NAMES` listing. */

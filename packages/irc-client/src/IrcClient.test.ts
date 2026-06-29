@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Subject } from "rxjs";
 import type { Message } from "@mojo-jojo/irc-message";
+import { WHOX_TOKEN } from "./protocol/whox.ts";
 import { IrcClient } from "./IrcClient.ts";
 import { MockTransport } from "./transport/MockTransport.ts";
 import type { Transport, TransportClose } from "./transport/Transport.ts";
@@ -1234,6 +1235,24 @@ describe("IrcClient — keepalive / half-open detection", () => {
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(mock.written.some((l) => l.startsWith("PING"))).toBe(false);
     expect(client.state).toBe("registered");
+    client.quit();
+  });
+});
+
+describe("IrcClient — WHOX", () => {
+  test("who() upgrades to a WHOX query when the server advertises WHOX", async () => {
+    const { client, mock } = await registerClient();
+    // No WHOX advertised yet -> plain WHO.
+    client.who("#chan");
+    await waitFor(() => mock.written.includes("WHO #chan\r\n"));
+
+    // Server advertises WHOX; now who() upgrades to the WHOX field spec + token.
+    mock.receiveLine(":irc 005 mojo WHOX :are supported");
+    await waitFor(() => client.server?.isupport.whox === true);
+    const before = mock.written.length;
+    client.who("#chan");
+    await waitFor(() => mock.written.slice(before).some((l) => l.startsWith("WHO #chan %")));
+    expect(mock.written.slice(before).some((l) => l.includes(`%tcuhnfar,${WHOX_TOKEN}`))).toBe(true);
     client.quit();
   });
 });
