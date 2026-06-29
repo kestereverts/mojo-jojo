@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import { Subject } from "rxjs";
 import type { Message } from "@mojo-jojo/irc-message";
 import { IrcClient } from "./IrcClient.ts";
 import { MockTransport } from "./transport/MockTransport.ts";
+import type { Transport, TransportClose } from "./transport/Transport.ts";
 import type { IrcClientOptions } from "./options.ts";
 import type { LifecycleEvent } from "./events/lifecycle.ts";
 import type { ClientEvent, IrcEvent, PrivmsgEvent } from "./events/types.ts";
@@ -1116,5 +1118,122 @@ describe("IrcClient — connect lifecycle hardening (M5 review)", () => {
     expect(client.state).toBe("closed");
     expect(completed).toBe(true); // consumers awaiting completion don't hang
     client.quit(); // idempotent after a terminal failure
+  });
+});
+
+describe("IrcClient — keepalive / half-open detection", () => {
+  test("pings after idle and reconnects when the connection is half-open", async () => {
+    const mocks: MockTransport[] = [];
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => {
+        const m = new MockTransport();
+        mocks.push(m);
+        return m;
+      },
+      caps: [],
+      floodDelayMs: 0,
+      pingIntervalMs: 30,
+      pingTimeoutMs: 30,
+      reconnect: { enabled: true, initialDelayMs: 1, factor: 1, jitter: false, maxDelayMs: 2 },
+    });
+    const events: LifecycleEvent[] = [];
+    client.lifecycle$.subscribe((e) => events.push(e));
+    const connected = client.connect();
+    await waitFor(() => mocks.length === 1 && mocks[0]!.written.some((l) => l.startsWith("USER")));
+    mocks[0]!.receiveLine(":irc 001 mojo :hi");
+    await connected;
+
+    // Go silent: after pingIntervalMs the client sends a keepalive PING...
+    await waitFor(() => mocks[0]!.written.some((l) => l.startsWith("PING")), 1000);
+    // ...and with no response, after pingTimeoutMs it drops and reconnects.
+    await waitFor(
+      () => mocks.length === 2 && mocks[1]!.written.some((l) => l.startsWith("USER")),
+      2000,
+    );
+    expect(events.some((e) => e.type === "disconnected" && e.local === false)).toBe(true);
+    client.quit();
+  });
+
+  test("does not ping or drop while inbound traffic keeps flowing", async () => {
+    const { client, mock } = await registerClient({ pingIntervalMs: 50, pingTimeoutMs: 50 });
+    const start = performance.now();
+    // Feed a message faster than the idle threshold, so the countdown keeps resetting.
+    while (performance.now() - start < 200) {
+      mock.receiveLine(":a!a@h PRIVMSG mojo :still here");
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+    expect(mock.written.some((l) => l.startsWith("PING"))).toBe(false);
+    expect(client.state).toBe("registered");
+    client.quit();
+  });
+
+  test("a timely PONG resets the idle countdown (keeps a healthy connection up)", async () => {
+    const { client, mock } = await registerClient({ pingIntervalMs: 25, pingTimeoutMs: 60 });
+    // Answer each keepalive PING with a PONG; the connection must never drop.
+    let answered = 0;
+    for (let i = 0; i < 5; i++) {
+      await waitFor(() => mock.written.filter((l) => l.startsWith("PING ")).length > answered, 1000);
+      const pingLine = mock.written.filter((l) => l.startsWith("PING "))[answered]!;
+      answered += 1;
+      mock.receiveLine(`PONG ${pingLine.trim().split(" ")[1]}`); // inbound → resets idle
+    }
+    expect(client.state).toBe("registered");
+    client.quit();
+  });
+
+  test("a transport whose write throws on the keepalive PING fails the attempt (not uncaught)", async () => {
+    const bytes = new Subject<Uint8Array>();
+    const enc = new TextEncoder();
+    const writes: string[] = [];
+    let pinged = false;
+    const transport: Transport = {
+      bytes$: bytes.asObservable(),
+      closed$: new Subject<TransportClose>().asObservable(),
+      connect: () => Promise.resolve(),
+      write: (data) => {
+        const line = typeof data === "string" ? data : new TextDecoder().decode(data);
+        writes.push(line);
+        if (line.startsWith("PING ")) {
+          pinged = true;
+          throw new Error("write boom");
+        }
+      },
+      close: () => undefined,
+    };
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => transport,
+      caps: [],
+      floodDelayMs: 0,
+      pingIntervalMs: 25,
+      pingTimeoutMs: 1000,
+      reconnect: { enabled: false },
+    });
+    const events: LifecycleEvent[] = [];
+    client.lifecycle$.subscribe((e) => events.push(e));
+    const connected = client.connect();
+    await waitFor(() => writes.some((l) => l.startsWith("USER")), 1000);
+    bytes.next(enc.encode(":irc 001 mojo :hi\r\n")); // complete registration cleanly
+    await connected;
+    expect(client.state).toBe("registered");
+
+    // Idle → keepalive PING → write throws. It must become an abnormal drop, not
+    // an uncaught observable error that silently kills the keepalive.
+    await waitFor(() => pinged, 1000);
+    await waitFor(() => events.some((e) => e.type === "disconnected" && e.local === false), 1000);
+    client.quit();
+  });
+
+  test("is disabled when pingIntervalMs is 0", async () => {
+    const { client, mock } = await registerClient({ pingIntervalMs: 0 });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(mock.written.some((l) => l.startsWith("PING"))).toBe(false);
+    expect(client.state).toBe("registered");
+    client.quit();
   });
 });

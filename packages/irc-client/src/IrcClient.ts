@@ -2,11 +2,16 @@ import {
   defer,
   filter,
   merge,
+  mergeMap,
   Observable,
+  startWith,
   Subject,
   Subscription,
+  switchMap,
   take,
   takeUntil,
+  tap,
+  timer,
 } from "rxjs";
 import type { Message } from "@mojo-jojo/irc-message";
 import { createMessageStream } from "./pipeline/IrcPipeline.ts";
@@ -24,6 +29,7 @@ import {
   nick as nickCommand,
   notice as noticeCommand,
   part as partCommand,
+  ping,
   pong,
   privmsg as privmsgCommand,
   quit as quitCommand,
@@ -724,6 +730,52 @@ export class IrcClient {
   }
 
   /**
+   * Active keepalive for one connection attempt. After `pingIntervalMs` of inbound
+   * silence it sends a `PING`; if no inbound traffic (the `PONG`, or anything)
+   * arrives within `pingTimeoutMs`, the connection is half-open (TCP wedged with
+   * no FIN/RST, so `bytes$` never errors) and we fail the attempt so
+   * `retryWithBackoff` reconnects. Any inbound message resets the idle countdown.
+   * Returns `Subscription.EMPTY` when keepalive is disabled — i.e. when either
+   * `pingIntervalMs` or `pingTimeoutMs` is non-finite or `<= 0`. The returned
+   * subscription is owned by the attempt's teardown.
+   */
+  #startKeepalive(
+    messages$: Observable<Message>,
+    queue: OutboundQueue,
+    failAttempt: (error: Error) => void,
+  ): Subscription {
+    const { pingIntervalMs, pingTimeoutMs } = this.#options;
+    // Disabled unless BOTH knobs are finite and positive: a non-positive or
+    // `Infinity` pingTimeoutMs would otherwise collapse the response window to a
+    // near-instant false drop (e.g. `timer(Infinity)` overflows to ~1ms).
+    if (!Number.isFinite(pingIntervalMs) || pingIntervalMs <= 0) return Subscription.EMPTY;
+    if (!Number.isFinite(pingTimeoutMs) || pingTimeoutMs <= 0) return Subscription.EMPTY;
+    const scheduler = this.#internals.scheduler;
+    let pings = 0;
+    return messages$
+      .pipe(
+        startWith(undefined), // begin the idle countdown without waiting for the first message
+        switchMap(() =>
+          // Reset on every inbound message; after pingIntervalMs of silence, ping…
+          timer(pingIntervalMs, scheduler).pipe(
+            tap(() => queue.sendImmediate(ping(`ka${++pings}`))),
+            // …then open the response window. A message arriving cancels this via
+            // the outer switchMap; if it elapses first, the connection is dead.
+            mergeMap(() => timer(pingTimeoutMs, scheduler)),
+          ),
+        ),
+      )
+      .subscribe({
+        // Response window elapsed with no inbound traffic → half-open → reconnect.
+        next: () => failAttempt(new Error("keepalive: no response within ping timeout")),
+        // A keepalive write throwing (e.g. a transport whose write() fails) must
+        // also be treated as an abnormal drop, not escape unhandled.
+        error: (err: unknown) =>
+          failAttempt(err instanceof Error ? err : new Error(`keepalive write failed: ${String(err)}`)),
+      });
+  }
+
+  /**
    * Build one connection attempt as an observable whose lifetime mirrors the
    * transport: it emits exactly once (on successful registration, to reset the
    * backoff), completes on a local close, and errors on an abnormal drop — so
@@ -815,6 +867,7 @@ export class IrcClient {
           });
           this.#queue = queue;
           this.#emit({ type: "connected", attempt });
+          sub.add(this.#startKeepalive(messages$, queue, failAttempt));
 
           const result = await register(
             { messages$, send: (message) => queue?.sendImmediate(message) },

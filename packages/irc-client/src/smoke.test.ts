@@ -50,12 +50,21 @@ suite("live smoke: irc-client end-to-end (IRC_SMOKE=1)", () => {
         username: "mojo",
         realName: "mojo-jojo smoke",
         reconnect: { enabled: false },
+        // Short keepalive so the heartbeat actually fires within the test window.
+        pingIntervalMs: 4000,
+        pingTimeoutMs: 8000,
         ...(useSasl
           ? { sasl: { mechanism: "PLAIN" as const, username: SASL_USER!, password: SASL_PASS! } }
           : {}),
       });
       const events: IrcEvent[] = [];
       client.events$.subscribe((e) => events.push(e));
+      // Capture raw PONGs: the server's reply to our keepalive PING proves the
+      // active-keepalive heartbeat round-trips against a real server.
+      let pongs = 0;
+      client.messages$.subscribe((m) => {
+        if (m.command === "PONG") pongs += 1;
+      });
 
       try {
         console.log(`[smoke] connecting ${HOST}:${PORT} tls=${TLS_ON} sasl=${useSasl} nick=${nick}`);
@@ -113,6 +122,12 @@ suite("live smoke: irc-client end-to-end (IRC_SMOKE=1)", () => {
             console.log(`[smoke] labeled chathistory unavailable: ${(err as Error).message}`);
           }
         }
+
+        // Active keepalive: idle past pingIntervalMs and confirm our PING was
+        // answered (PONG) and the connection stayed healthy (no false drop).
+        await waitFor(() => pongs > 0, 15000, "keepalive PING -> PONG round-trip");
+        expect(client.state).toBe("registered");
+        console.log(`[smoke] keepalive heartbeat confirmed (${pongs} PONG(s)); still registered`);
       } finally {
         client.quit("mojo-jojo smoke complete");
       }

@@ -86,6 +86,18 @@ export interface IrcClientOptions {
   readonly floodDelayMs?: number;
   /** Max messages buffered in the flood queue before `send` throws (default 1024). */
   readonly maxQueueDepth?: number;
+  /**
+   * Active keepalive: after this many milliseconds with no inbound traffic, send
+   * a `PING` to detect a half-open connection (TCP wedged with no FIN/RST, so
+   * `bytes$` never errors and reconnect would never fire). Default 60000. Set to
+   * `0` or `Infinity` to disable (rely only on server PINGs / transport errors).
+   */
+  readonly pingIntervalMs?: number;
+  /**
+   * How long to wait for any inbound traffic after a keepalive `PING` before
+   * declaring the connection dead and forcing a reconnect. Default 30000.
+   */
+  readonly pingTimeoutMs?: number;
   /** Registration handshake timeout, in milliseconds (default 30000). */
   readonly registrationTimeoutMs?: number;
   /**
@@ -118,6 +130,8 @@ export interface ResolvedOptions {
   readonly reconnect: ReconnectPolicy;
   readonly floodDelayMs: number;
   readonly maxQueueDepth: number;
+  readonly pingIntervalMs: number;
+  readonly pingTimeoutMs: number;
   readonly registrationTimeoutMs: number;
   readonly connectTimeoutMs: number;
   readonly transportFactory: TransportFactory;
@@ -162,6 +176,8 @@ export function resolveOptions(options: IrcClientOptions): ResolvedOptions {
     reconnect,
     floodDelayMs: options.floodDelayMs ?? 500,
     maxQueueDepth: options.maxQueueDepth ?? 1024,
+    pingIntervalMs: options.pingIntervalMs ?? 60000,
+    pingTimeoutMs: options.pingTimeoutMs ?? 30000,
     registrationTimeoutMs: options.registrationTimeoutMs ?? 30000,
     connectTimeoutMs: options.connectTimeoutMs ?? 60000,
     transportFactory,
