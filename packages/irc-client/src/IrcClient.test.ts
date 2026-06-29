@@ -1074,3 +1074,47 @@ describe("IrcClient — resilience (M3 review)", () => {
     client.quit();
   });
 });
+
+describe("IrcClient — connect lifecycle hardening (M5 review)", () => {
+  test("connect() rejects + completes its streams if registration never happens", async () => {
+    let completed = false;
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => new MockTransport(), // fresh per attempt; never sends 001
+      caps: [],
+      floodDelayMs: 0,
+      reconnect: { enabled: true, initialDelayMs: 1, factor: 1, jitter: false, maxDelayMs: 2 },
+      registrationTimeoutMs: 20, // each attempt times out fast → retries
+      connectTimeoutMs: 120, // ...but the overall initial connect is bounded
+    });
+    client.events$.subscribe({ complete: () => (completed = true) });
+    let error: unknown;
+    await client.connect().catch((e: unknown) => {
+      error = e;
+    });
+    expect((error as Error).message).toContain("timed out");
+    expect(client.state).toBe("closed");
+    expect(completed).toBe(true); // no infinite hang; streams completed
+  });
+
+  test("a terminal connect failure (reconnect disabled) completes the public streams", async () => {
+    const mock = new MockTransport();
+    let completed = false;
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps: [],
+      reconnect: { enabled: false },
+      registrationTimeoutMs: 30,
+    });
+    client.events$.subscribe({ complete: () => (completed = true) });
+    await client.connect().catch(() => undefined);
+    expect(client.state).toBe("closed");
+    expect(completed).toBe(true); // consumers awaiting completion don't hang
+    client.quit(); // idempotent after a terminal failure
+  });
+});

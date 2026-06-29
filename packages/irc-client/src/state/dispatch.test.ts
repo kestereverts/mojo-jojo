@@ -538,6 +538,36 @@ describe("dispatch — resource hygiene (no unbounded growth)", () => {
   });
 });
 
+describe("dispatch — NICK collisions (non-conformant server)", () => {
+  test("a NICK onto an existing nick disposes the displaced user", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":alice!a@h JOIN #chan");
+    h.feed(":bob!b@h JOIN #chan");
+    const aliceUser = h.store.user("alice")!;
+    let bobCompleted = false;
+    h.store.user("bob")!.events$.subscribe({ complete: () => (bobCompleted = true) });
+
+    // alice renames onto the already-present "bob" (a server that broke uniqueness).
+    h.feed(":alice!a@h NICK bob");
+    expect(bobCompleted).toBe(true); // displaced bob's stream completed (no leak)
+    expect(h.store.user("bob")).toBe(aliceUser); // bob now resolves to renamed-alice
+    expect(h.store.user("alice")).toBeUndefined();
+    expect(h.store.channel("#chan")?.members.size).toBe(2); // me + bob (collapsed)
+  });
+
+  test("a NICK onto our own nick is refused (self identity protected)", () => {
+    const h = harness(); // self = "me"
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":alice!a@h JOIN #chan");
+    expect(h.feed(":alice!a@h NICK me")).toBeNull(); // refused — no event
+    expect(h.store.user("me")?.isSelf).toBe(true); // our self user is preserved
+    expect(h.store.user("alice")).toBeDefined(); // alice unchanged
+  });
+});
+
 describe("dispatch — passthrough", () => {
   test("unhandled commands return null (still visible on messages$)", () => {
     const h = harness();

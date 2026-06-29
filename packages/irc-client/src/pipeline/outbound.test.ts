@@ -79,6 +79,21 @@ describe("OutboundQueue", () => {
       queue.close();
     });
 
+    test("send() throws once the pending queue is full (no unbounded buffering)", () => {
+      const writes: string[] = [];
+      // Huge flood delay so nothing drains during the test; small depth cap.
+      const queue = new OutboundQueue((line) => writes.push(line), {
+        floodDelayMs: 100000,
+        maxQueueDepth: 3,
+      });
+      // First drains immediately; the next three buffer behind the flood spacer.
+      expect(() => {
+        for (let i = 0; i < 4; i++) queue.send(msg(`m${i}`));
+      }).not.toThrow();
+      expect(() => queue.send(msg("overflow"))).toThrow(/queue is full/);
+      queue.close();
+    });
+
     test("sendImmediate() is lenient: strips CR/LF/NUL and truncates", () => {
       const writes: string[] = [];
       const queue = new OutboundQueue((line) => writes.push(line), { floodDelayMs: 0 });

@@ -20,7 +20,17 @@ export interface OutboundQueueOptions {
    * tests inject a `TestScheduler` for deterministic timing.
    */
   readonly scheduler?: SchedulerLike;
+  /**
+   * Maximum number of messages buffered awaiting flood-controlled delivery.
+   * {@link send} throws once this many are pending, so a producer that outpaces
+   * the drain rate fails loudly instead of growing memory without bound and
+   * delivering ever-staler messages. Defaults to {@link DEFAULT_MAX_QUEUE_DEPTH}.
+   */
+  readonly maxQueueDepth?: number;
 }
+
+/** Default cap on pending flood-queued messages (see {@link OutboundQueueOptions.maxQueueDepth}). */
+export const DEFAULT_MAX_QUEUE_DEPTH = 1024;
 
 /** The hard IRC line limit, including the trailing CRLF (RFC 1459/2812 §2.3). */
 export const MAX_LINE_BYTES = 512;
@@ -77,10 +87,13 @@ export class OutboundQueue {
   readonly #queue = new Subject<string>();
   readonly #write: (line: string) => void;
   readonly #subscription: Subscription;
+  readonly #maxQueueDepth: number;
+  #pending = 0;
   #closed = false;
 
   constructor(write: (line: string) => void, options: OutboundQueueOptions) {
     this.#write = write;
+    this.#maxQueueDepth = options.maxQueueDepth ?? DEFAULT_MAX_QUEUE_DEPTH;
     const scheduler: SchedulerLike = options.scheduler ?? asyncScheduler;
     this.#subscription = this.#queue
       .pipe(
@@ -90,7 +103,10 @@ export class OutboundQueue {
           concat(of(line), timer(options.floodDelayMs, scheduler).pipe(ignoreElements())),
         ),
       )
-      .subscribe((line) => this.#write(line));
+      .subscribe((line) => {
+        this.#pending--;
+        this.#write(line);
+      });
   }
 
   /**
@@ -114,6 +130,12 @@ export class OutboundQueue {
         `OutboundQueue: message is ${byteLength(body) + 2} bytes, over the ${MAX_LINE_BYTES}-byte IRC line limit`,
       );
     }
+    if (this.#pending >= this.#maxQueueDepth) {
+      throw new Error(
+        `OutboundQueue: send queue is full (${this.#maxQueueDepth} pending) — the send rate exceeds the flood-control drain rate`,
+      );
+    }
+    this.#pending++;
     this.#queue.next(body + "\r\n");
   }
 

@@ -141,6 +141,8 @@ export class IrcClient {
   #nick: string;
   #state: ClientState = "idle";
   #attemptCount = 0;
+  /** Set once {@link #shutdown} has torn the client down (idempotency guard). */
+  #torndown = false;
   /** Monotonic counter for `labeled-response` correlation tags (M6). */
   #labelCounter = 0;
 
@@ -304,7 +306,7 @@ export class IrcClient {
     );
 
     return new Promise<void>((resolve, reject) => {
-      let resolved = false;
+      let settled = false;
       const registeredSub = this.#lifecycle
         .pipe(
           filter((event) => event.type === "registered"),
@@ -312,9 +314,30 @@ export class IrcClient {
           takeUntil(this.#teardown),
         )
         .subscribe(() => {
-          resolved = true;
+          if (settled) return;
+          settled = true;
+          clearTimeout(deadline);
           resolve();
         });
+
+      // Bound the *initial* connect so a bad host / never-registering server can't
+      // hang `await connect()` forever under the default infinite-retry policy.
+      // Once registered this is cleared; later drops are governed by `reconnect`.
+      const deadline: ReturnType<typeof setTimeout> | undefined = Number.isFinite(
+        this.#options.connectTimeoutMs,
+      )
+        ? setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            registeredSub.unsubscribe();
+            reject(
+              new Error(
+                `connect: timed out after ${this.#options.connectTimeoutMs}ms before registration`,
+              ),
+            );
+            this.#shutdown(); // stop the retry loop + complete the public streams
+          }, this.#options.connectTimeoutMs)
+        : undefined;
 
       this.#connectionSub = connection$.subscribe({
         error: (err: unknown) => {
@@ -322,14 +345,25 @@ export class IrcClient {
           this.#state = "closed";
           this.#emit({ type: "error", error });
           registeredSub.unsubscribe();
-          if (!resolved) reject(error);
+          if (!settled) {
+            settled = true;
+            clearTimeout(deadline);
+            reject(error);
+          }
+          // Terminal failure (reconnect disabled/exhausted): complete the public
+          // streams so consumers awaiting completion don't hang.
+          this.#shutdown();
         },
         complete: () => {
           // Reached only via a local close (quit) — abnormal drops error instead.
           this.#state = "closed";
           this.#emit({ type: "disconnected", local: true });
           registeredSub.unsubscribe();
-          if (!resolved) reject(new Error("connection closed before registration"));
+          if (!settled) {
+            settled = true;
+            clearTimeout(deadline);
+            reject(new Error("connection closed before registration"));
+          }
         },
       });
     });
@@ -337,13 +371,25 @@ export class IrcClient {
 
   /**
    * Send `QUIT`, close the connection, and tear down all subscriptions. Stops
-   * reconnection. Idempotent-ish: safe to call once; the client is single-use.
+   * reconnection. Idempotent: safe to call repeatedly; the client is single-use.
    */
   quit(reason = "Leaving"): void {
     this.#queue?.sendImmediate(quitCommand(reason));
+    this.#shutdown();
+  }
+
+  /**
+   * Stop reconnection and complete every long-lived stream/subscription. Shared
+   * by {@link quit} and the terminal/timeout failure paths so a client that never
+   * (or no longer) connects still completes `messages$`/`events$`/`lifecycle$`
+   * rather than leaving consumers awaiting completion forever. Idempotent.
+   */
+  #shutdown(): void {
+    if (this.#torndown) return;
+    this.#torndown = true;
     this.#state = "closed";
-    // Stop reconnect + long-lived subscriptions; takeUntil completes connection$
-    // (its complete handler emits the local "disconnected").
+    // takeUntil completes connection$ (its complete handler emits the local
+    // "disconnected" when an attempt was live).
     this.#teardown.next();
     this.#teardown.complete();
     this.#connectionSub?.unsubscribe();
@@ -765,6 +811,7 @@ export class IrcClient {
           if (settled) return; // closed while connecting
           queue = new OutboundQueue((line) => transport.write(line), {
             floodDelayMs: this.#options.floodDelayMs,
+            maxQueueDepth: this.#options.maxQueueDepth,
           });
           this.#queue = queue;
           this.#emit({ type: "connected", attempt });

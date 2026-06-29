@@ -141,6 +141,20 @@ export class StateStore {
   renameUser(oldNick: string, newNick: string): { user: User; channels: Channel[] } | undefined {
     const user = this.server.users.get(oldNick);
     if (!user) return undefined;
+
+    // Nick collision (a non-conformant server: nicks are supposed to be unique).
+    // Renaming onto a *different* live user would otherwise silently overwrite it,
+    // leaking its stream (never completed) and conflating two identities.
+    const displaced = this.server.users.get(newNick);
+    if (displaced !== undefined && displaced !== user) {
+      // Never let a rename clobber our own self identity (e.g. `:alice NICK us`).
+      if (this.isSelf(newNick)) return undefined;
+      // Otherwise dispose the displaced user before the nick is reused.
+      for (const channel of this.channelsWithUser(newNick)) channel.members.remove(newNick);
+      this.server.users.delete(newNick);
+      displaced[DISPOSE]();
+    }
+
     const wasSelf = this.isSelf(oldNick);
     const channels = this.channelsWithUser(oldNick);
 

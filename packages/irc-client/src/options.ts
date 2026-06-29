@@ -84,8 +84,20 @@ export interface IrcClientOptions {
   readonly reconnect?: ReconnectOptions;
   /** Minimum gap between flood-controlled sends, in milliseconds (default 500). */
   readonly floodDelayMs?: number;
+  /** Max messages buffered in the flood queue before `send` throws (default 1024). */
+  readonly maxQueueDepth?: number;
   /** Registration handshake timeout, in milliseconds (default 30000). */
   readonly registrationTimeoutMs?: number;
+  /**
+   * Overall deadline for the initial {@link IrcClient.connect}, in milliseconds
+   * (default 60000). If registration hasn't succeeded within it — across any
+   * initial reconnect attempts — `connect()` rejects and the client shuts down,
+   * so `await connect()` can't hang forever on an unreachable/never-registering
+   * server under the default infinite-retry policy. Use `Infinity` to opt out.
+   * Only bounds the *initial* connect; once registered, reconnection is governed
+   * by {@link reconnect}.
+   */
+  readonly connectTimeoutMs?: number;
   /** Transport factory override — inject a `MockTransport` factory in tests. */
   readonly transport?: TransportFactory;
 }
@@ -105,7 +117,9 @@ export interface ResolvedOptions {
   readonly backend: Backend;
   readonly reconnect: ReconnectPolicy;
   readonly floodDelayMs: number;
+  readonly maxQueueDepth: number;
   readonly registrationTimeoutMs: number;
+  readonly connectTimeoutMs: number;
   readonly transportFactory: TransportFactory;
 }
 
@@ -147,7 +161,9 @@ export function resolveOptions(options: IrcClientOptions): ResolvedOptions {
     backend: options.backend ?? "js-fast",
     reconnect,
     floodDelayMs: options.floodDelayMs ?? 500,
+    maxQueueDepth: options.maxQueueDepth ?? 1024,
     registrationTimeoutMs: options.registrationTimeoutMs ?? 30000,
+    connectTimeoutMs: options.connectTimeoutMs ?? 60000,
     transportFactory,
   };
 }
