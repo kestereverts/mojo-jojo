@@ -174,13 +174,24 @@ export function chunkCaps(caps: readonly string[]): string[][] {
  * (`enabled`). Lives for the duration of a connection so post-registration
  * `CAP NEW`/`CAP DEL` notifications (the `cap-notify` extension) keep it current.
  */
+/**
+ * Hard ceiling on distinct capabilities tracked for a connection. Servers
+ * advertise a few dozen; this only stops a hostile server growing the
+ * available/enabled sets without bound via endless `CAP LS`/`NEW`/`ACK` tokens.
+ */
+export const MAX_TRACKED_CAPS = 1024;
+
 export class CapabilityStore {
   readonly #available = new Map<string, CapValue>();
   readonly #enabled = new Set<string>();
 
   /** Record advertised capabilities from a `CAP LS`/`CAP NEW` line. */
   addAvailable(tokens: readonly CapToken[]): void {
-    for (const token of tokens) this.#available.set(token.name, token.value);
+    for (const token of tokens) {
+      // Updates to known caps always apply; brand-new caps past the cap are dropped.
+      if (!this.#available.has(token.name) && this.#available.size >= MAX_TRACKED_CAPS) continue;
+      this.#available.set(token.name, token.value);
+    }
   }
 
   /** Drop capabilities removed by a `CAP DEL` line (also disables them). */
@@ -195,7 +206,10 @@ export class CapabilityStore {
   applyAck(tokens: readonly CapToken[]): void {
     for (const token of tokens) {
       if (token.disabled) this.#enabled.delete(token.name);
-      else this.#enabled.add(token.name);
+      // Already-enabled stay; new enables past the cap are dropped (anti-flood).
+      else if (this.#enabled.has(token.name) || this.#enabled.size < MAX_TRACKED_CAPS) {
+        this.#enabled.add(token.name);
+      }
     }
   }
 

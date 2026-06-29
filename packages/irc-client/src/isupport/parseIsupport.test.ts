@@ -102,6 +102,14 @@ describe("parseIsupport", () => {
     expect(s.network).toBe("Two Words");
   });
 
+  test("the raw token record is bounded against a flood of distinct keys", () => {
+    // A hostile server streaming endless distinct 005 tokens must not grow `raw`
+    // without bound. Known keys still parse; only brand-new keys past the cap drop.
+    const tokens = Array.from({ length: 400 }, (_, i) => `KEY${i}=v`);
+    const s = parseIsupport([...tokens, "PREFIX=(ov)@+"]);
+    expect(Object.keys(s.raw).length).toBeLessThanOrEqual(256);
+  });
+
   test("EMPTY_ISUPPORT carries library defaults", () => {
     expect(EMPTY_ISUPPORT.chanTypes).toBe("#&");
     expect(EMPTY_ISUPPORT.caseMapping).toBe("rfc1459");

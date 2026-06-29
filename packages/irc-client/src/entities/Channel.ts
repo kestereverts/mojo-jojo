@@ -23,6 +23,13 @@ import type {
 } from "../events/types.ts";
 
 /**
+ * Hard ceiling on entries retained per channel list-mode (e.g. bans), so a
+ * hostile server streaming unique masks can't grow a list set without bound.
+ * Generous enough not to clip a real channel's ban/exception/invite lists.
+ */
+const MAX_LIST_ENTRIES = 1000;
+
+/**
  * A joined channel: its topic (with who/when set it), its channel modes, and its
  * {@link MemberList}. State is mutated only by the StateStore via the `@internal`
  * methods; consumers read it through the getters and reactive streams.
@@ -143,7 +150,10 @@ export class Channel extends ReactiveEntity<ChannelEvent> {
           set = new Set<string>();
           this.#lists.set(mode, set);
         }
-        set.add(param);
+        // Bound each list: a hostile server could otherwise stream unique masks
+        // (`+b mask0`, `+b mask1`, …) to grow this set without limit. Real ircds
+        // cap list size (ISUPPORT MAXLIST); we apply a conservative hard ceiling.
+        if (set.size < MAX_LIST_ENTRIES || set.has(param)) set.add(param);
       } else {
         set?.delete(param);
       }

@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { parseMessage } from "@mojo-jojo/irc-message";
 import {
   CapabilityStore,
+  MAX_TRACKED_CAPS,
   parseCapMessage,
   reconcileCaps,
+  type CapToken,
   type CapValue,
 } from "./capabilities.ts";
 
@@ -148,5 +150,18 @@ describe("CapabilityStore", () => {
     const snapshot = store.available;
     store.removeAvailable([{ name: "sasl", value: null, disabled: false }]);
     expect(snapshot.has("sasl")).toBe(true); // snapshot unaffected by later mutation
+  });
+
+  test("bounds available/enabled against a capability flood", () => {
+    const store = new CapabilityStore();
+    const tokens: CapToken[] = Array.from({ length: MAX_TRACKED_CAPS + 50 }, (_, i) => ({
+      name: `cap${i}`,
+      value: null,
+      disabled: false,
+    }));
+    store.addAvailable(tokens);
+    expect(store.available.size).toBe(MAX_TRACKED_CAPS);
+    store.applyAck(tokens);
+    expect(store.enabled.size).toBe(MAX_TRACKED_CAPS);
   });
 });

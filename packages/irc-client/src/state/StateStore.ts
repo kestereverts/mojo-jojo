@@ -9,6 +9,14 @@ import { DISPOSE } from "../entities/internal.ts";
 // keep entities live. Entity *event* routing is the dispatcher's job; the store
 // only mutates state and disposes entity streams on removal.
 
+/**
+ * Hard ceiling on tracked channels. A bot drives its own joins, so a few
+ * thousand never clips real use; it only stops a hostile server from forcing
+ * unbounded channel allocation (e.g. forged `:<ournick> JOIN #fakeN` floods —
+ * the source nick is forgeable, so an `isSelf` check alone is not a memory bound).
+ */
+export const MAX_CHANNELS = 4096;
+
 export class StateStore {
   readonly server: Server;
 
@@ -48,9 +56,16 @@ export class StateStore {
     return user;
   }
 
-  getOrCreateChannel(name: string): Channel {
+  /**
+   * Get the channel, creating it if absent — unless we're at {@link MAX_CHANNELS},
+   * in which case a brand-new channel is refused (returns `undefined`) so a
+   * hostile server can't grow the channel map without bound. Existing channels
+   * are always returned.
+   */
+  getOrCreateChannel(name: string): Channel | undefined {
     const existing = this.server.channels.get(name);
     if (existing) return existing;
+    if (this.server.channels.size >= MAX_CHANNELS) return undefined;
     const channel = new Channel(name, this.server);
     this.server.channels.set(name, channel);
     return channel;

@@ -24,6 +24,13 @@ import {
 const SASL_CHUNK_SIZE = 400;
 
 /**
+ * Upper bound on a reassembled inbound SASL challenge (bytes). PLAIN/EXTERNAL
+ * challenges are tiny; even SCRAM is well under this. It only stops a hostile
+ * server from streaming endless 400-byte continuation chunks (memory DoS).
+ */
+const MAX_SASL_CHALLENGE = 65536;
+
+/**
  * A SASL mechanism. Given the decoded server challenge (empty string for the
  * initial `AUTHENTICATE +` prompt), it produces the raw — pre-base64 — response.
  * PLAIN and EXTERNAL are client-first and ignore the challenge; interactive
@@ -189,6 +196,14 @@ export class SaslSession {
   #onChallenge(param: string): SaslStep {
     // A 400-byte, non-`+` chunk means more challenge is coming.
     if (param !== "+" && param.length === SASL_CHUNK_SIZE) {
+      // Bound reassembly: a hostile SASL server could otherwise stream 400-byte
+      // continuation chunks forever (and never terminate), growing this buffer
+      // without limit before the handshake timeout fires. Fail closed past the cap.
+      if (this.#challenge.length >= MAX_SASL_CHALLENGE) {
+        this.#challenge = "";
+        this.#finished = true;
+        return { type: "failure", code: "TOOLONG", reason: "SASL challenge exceeded the size limit" };
+      }
       this.#challenge += param;
       return { type: "continue" };
     }

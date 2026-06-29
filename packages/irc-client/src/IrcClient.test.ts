@@ -778,6 +778,22 @@ describe("IrcClient — labeled-response + chathistory (M6)", () => {
     expect([...client.enabledCaps]).toEqual([]);
     client.quit();
   });
+
+  test("sendLabeled bounds a never-closing labeled batch (rejects, no OOM)", async () => {
+    const { client, mock } = await registerWithCaps(["labeled-response", "batch"]);
+    let error: unknown;
+    const p = client.sendLabeled(msg("WHO", "#big")).catch((e: unknown) => {
+      error = e;
+    });
+    await waitFor(() => mock.written.some((l) => l.startsWith("@label=")));
+    const label = labelOf(mock);
+    // Server opens the labeled batch and then floods it without ever closing it.
+    mock.receiveLine(`@label=${label} :irc BATCH +bb chathistory #big`);
+    for (let i = 0; i < 4200; i++) mock.receiveLine(`@batch=bb :x!x@h PRIVMSG #big :m${i}`);
+    await p;
+    expect((error as Error).message).toContain("size limit");
+    client.quit();
+  });
 });
 
 describe("IrcClient — cap-notify (CAP NEW/DEL)", () => {

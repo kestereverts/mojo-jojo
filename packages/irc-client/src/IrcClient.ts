@@ -75,6 +75,11 @@ export interface IrcClientInternals {
   readonly onParseError?: (error: unknown, line: string) => void;
 }
 
+/** Caps on a single {@link IrcClient.sendLabeled} response, so a server that
+ * streams a never-closing labeled batch can't grow its buffer without bound. */
+const MAX_LABELED_MESSAGES = 4096;
+const MAX_LABELED_BATCHES = 64;
+
 /** Default sink for dispatch faults: log them so they aren't silently lost. */
 function defaultDispatchErrorHandler(error: unknown, message: Message): void {
   console.error(`[irc-client] dispatch failed for ${message.command}:`, error);
@@ -536,6 +541,15 @@ export class IrcClient {
             }
             const ref = m.tags["batch"];
             if (ref === undefined || !batchRefs.has(ref)) return;
+            // Bound collection: a hostile server could stream `@batch=<ref>` lines
+            // (and nested batch opens) forever without closing, growing this
+            // buffer until the timeout. Settle as a failure past the caps.
+            if (collected.length >= MAX_LABELED_MESSAGES || batchRefs.size > MAX_LABELED_BATCHES) {
+              finish(() =>
+                reject(new Error("sendLabeled: labeled response exceeded the size limit")),
+              );
+              return;
+            }
             collected.push(m);
             // A nested batch: track its ref so its content is collected too.
             if (m.command === "BATCH" && token !== undefined && token[0] === "+") {

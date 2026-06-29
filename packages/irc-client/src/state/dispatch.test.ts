@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { parseMessage, type Message } from "@mojo-jojo/irc-message";
-import { StateStore } from "./StateStore.ts";
+import { MAX_CHANNELS, StateStore } from "./StateStore.ts";
 import { Dispatcher } from "./dispatch.ts";
 import type { IrcEvent } from "../events/types.ts";
 
@@ -472,6 +472,58 @@ describe("dispatch — resource hygiene (no unbounded growth)", () => {
     // The non-member setters likewise leave no orphan users behind.
     expect(h.store.user("eve")).toBeUndefined();
     expect(h.store.user("op")).toBeUndefined();
+  });
+
+  test("a foreign JOIN to an untracked channel is ignored (no phantom growth)", () => {
+    const h = harness();
+    register(h);
+    // We never joined #fake; a hostile server pushing a foreign JOIN must not
+    // create the channel/user (otherwise unbounded phantom growth → OOM).
+    expect(h.feed(":rand!u@h JOIN #fake")).toBeNull();
+    expect(h.store.channel("#fake")).toBeUndefined();
+    expect(h.store.user("rand")).toBeUndefined();
+    expect(h.store.server.channels.size).toBe(0);
+
+    // ...but a foreign JOIN to a channel we ARE in still adds the member.
+    h.feed(":me!u@h JOIN #chan");
+    expect(h.feed(":bob!b@h JOIN #chan")?.type).toBe("join");
+    expect(h.store.channel("#chan")?.members.has("bob")).toBe(true);
+  });
+
+  test("total tracked channels are bounded against a forged self-JOIN flood", () => {
+    const h = harness();
+    register(h);
+    // `isSelf` is forgeable (the server controls the prefix), so a hostile server
+    // can send `:<ournick> JOIN #fakeN` — the channel COUNT must still be capped.
+    for (let i = 0; i < MAX_CHANNELS + 5; i++) h.feed(`:me!u@h JOIN #fake${i}`);
+    expect(h.store.server.channels.size).toBe(MAX_CHANNELS);
+  });
+
+  test("channel list-mode (ban) retention is bounded", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    for (let i = 0; i < 1100; i++) h.feed(`:op!o@h MODE #chan +b mask${i}!*@*`);
+    expect(h.store.channel("#chan")!.lists.get("b")!.size).toBe(1000);
+  });
+
+  test("a forged user-MODE source is not retained (no channel involved)", () => {
+    const h = harness();
+    register(h);
+    // `:fake MODE fake +i` is a user mode (no channel); the source must not leak.
+    expect(h.feed(":fake!f@h MODE fake +i")?.type).toBe("mode");
+    expect(h.store.user("fake")).toBeUndefined();
+    expect(h.store.server.users.size).toBe(1); // only us
+  });
+
+  test("a forged KICK source (kicker) and target are not retained", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    // A non-member kicker (forged source) and a non-member target must not linger.
+    expect(h.feed(":fake!f@h KICK #chan ghost :bye")?.type).toBe("kick");
+    expect(h.store.user("fake")).toBeUndefined();
+    expect(h.store.user("ghost")).toBeUndefined();
   });
 
   test("a non-member MODE/TOPIC setter in a joined channel is not retained", () => {

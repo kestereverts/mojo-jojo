@@ -205,4 +205,19 @@ describe("SaslSession — challenge reassembly", () => {
       .join("");
     expect(decodeBase64(responseB64)).toBe(challenge);
   });
+
+  test("a never-terminating challenge is bounded and fails closed", () => {
+    const echo: SaslMechanism = { name: "ECHO", respond: (c) => c };
+    const session = new SaslSession(echo);
+    const chunk = "A".repeat(400); // a 400-byte, non-'+' chunk => "more coming"
+    let failed = false;
+    for (let i = 0; i < 1000 && !failed; i++) {
+      const step = session.handle(parseMessage(`AUTHENTICATE ${chunk}`));
+      if (step.type === "failure") {
+        failed = true;
+        expect(step.code).toBe("TOOLONG"); // bounded before any handshake timeout
+      }
+    }
+    expect(failed).toBe(true);
+  });
 });

@@ -60,6 +60,13 @@ export interface ISupport {
   readonly raw: Readonly<Record<string, string | true>>;
 }
 
+/**
+ * Upper bound on distinct ISUPPORT tokens retained for a connection. Real servers
+ * advertise a few dozen; this only stops a hostile server from growing the `raw`
+ * record without bound by streaming endless unique `005` keys.
+ */
+const MAX_ISUPPORT_KEYS = 256;
+
 /** Conventional defaults used before (or absent) a server's PREFIX/CHANMODES. */
 const DEFAULT_PREFIXES: readonly PrefixSpec[] = [
   { mode: "o", prefix: "@" },
@@ -125,11 +132,18 @@ export function parseIsupport(
       continue;
     }
     const eq = token.indexOf("=");
-    if (eq === -1) {
-      raw[token.toUpperCase()] = true;
-    } else {
-      raw[token.slice(0, eq).toUpperCase()] = unescapeValue(token.slice(eq + 1));
+    const key = (eq === -1 ? token : token.slice(0, eq)).toUpperCase();
+    // Bound the retained token set: a hostile server streaming endless distinct
+    // `005 KEYn=v` tokens could otherwise grow `raw` without limit over the
+    // connection's life. Updates to existing keys are always allowed; only
+    // brand-new keys past the cap are dropped (real servers send far fewer).
+    if (
+      !Object.prototype.hasOwnProperty.call(raw, key) &&
+      Object.keys(raw).length >= MAX_ISUPPORT_KEYS
+    ) {
+      continue;
     }
+    raw[key] = eq === -1 ? true : unescapeValue(token.slice(eq + 1));
   }
 
   return deriveISupport(raw);

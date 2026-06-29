@@ -50,6 +50,13 @@ interface OpenBatch {
 const MAX_OPEN_BATCHES = 64;
 const MAX_BATCH_MESSAGES = 4096;
 
+/**
+ * Hard ceiling on members tracked per channel. Sized not to clip a legitimately
+ * large channel, but to stop a hostile server flooding distinct joiners/NAMES
+ * into a channel from growing the member + user maps without bound.
+ */
+const MAX_MEMBERS_PER_CHANNEL = 100000;
+
 export class Dispatcher {
   readonly #store: StateStore;
   /** Open batches by reference tag; entries collect their tagged messages (M6). */
@@ -193,7 +200,9 @@ export class Dispatcher {
     if (!channel) return null;
     const setBy = message.params[2] ?? null;
     const unix = Number(message.params[3]);
-    const setAt = Number.isFinite(unix) ? new Date(unix * 1000) : null;
+    const candidate = Number.isFinite(unix) ? new Date(unix * 1000) : null;
+    // Guard against an absurd timestamp (e.g. 1e300) producing an Invalid Date.
+    const setAt = candidate !== null && !Number.isNaN(candidate.getTime()) ? candidate : null;
     channel.setTopic(channel.topic, setBy, setAt);
     return null;
   }
@@ -213,6 +222,11 @@ export class Dispatcher {
     for (const token of list.split(" ")) {
       if (token === "") continue;
       const entry = this.#splitNamesEntry(token);
+      // Bound member growth: a 353 burst of distinct nicks must not grow the
+      // member/user maps without bound. Skip new members past the cap (existing
+      // ones still get their prefixes refreshed). Checked before creating the user.
+      const known = channel.members.has(entry.nick);
+      if (!known && channel.members.size >= MAX_MEMBERS_PER_CHANNEL) continue;
       const user = this.#store.getOrCreateUser(entry.nick);
       if (entry.user !== undefined || entry.host !== undefined) {
         user.updateFromSource({ name: entry.nick, user: entry.user, host: entry.host });
@@ -260,7 +274,29 @@ export class Dispatcher {
     const name = message.params[0];
     if (source === null || name === undefined) return null;
 
-    const channel = this.#store.getOrCreateChannel(name);
+    // Only OUR join creates the channel. A foreign JOIN to a channel we don't
+    // track is ignored — otherwise a hostile server could stream fabricated
+    // `:rand JOIN #fakeN` lines and grow channels/users/Subjects without bound
+    // (OOM). On a well-behaved server a foreign join always implies we're already
+    // in the channel, so this only rejects the adversarial case.
+    const isSelf = this.#store.isSelf(source.name);
+    // `getOrCreateChannel` returns undefined at the channel cap, so a flood of
+    // forged self-JOINs (`:<ournick> JOIN #fakeN`) can't grow channels unbounded.
+    const channel = isSelf ? this.#store.getOrCreateChannel(name) : this.#store.channel(name);
+    if (!channel) return null;
+
+    // Bound member growth: a hostile server flooding distinct joiners into a
+    // tracked channel must not grow members/users unbounded. Checked before
+    // creating the user, so the users map is bounded too. Existing members and
+    // our own join always pass.
+    if (
+      !isSelf &&
+      !channel.members.has(source.name) &&
+      channel.members.size >= MAX_MEMBERS_PER_CHANNEL
+    ) {
+      return null;
+    }
+
     const user = this.#store.getOrCreateUser(source.name);
     user.updateFromSource(source);
 
@@ -280,7 +316,7 @@ export class Dispatcher {
       channel,
       user,
       member,
-      isSelf: this.#store.isSelf(source.name),
+      isSelf,
       account,
       realName,
     });
@@ -374,6 +410,9 @@ export class Dispatcher {
       channel.members.remove(targetNick);
       this.#store.pruneOrphan(targetNick);
     }
+    // The kicker (`by`) may be a non-member (e.g. a service, or a forged-source
+    // flood); don't let it linger in the users map.
+    if (by !== null) this.#store.pruneOrphan(by.nick);
     return event;
   }
 
@@ -576,8 +615,13 @@ export class Dispatcher {
 
     if (!isChannelName(target, this.#store.server.isupport)) {
       // User mode: no params, no channel; track as a simple change list.
+      const by = resolveBy();
       const changes = this.#parseUserModes(modeString);
-      return factory.modeEvent(message, { target, channel: null, by: resolveBy(), changes });
+      const event = factory.modeEvent(message, { target, channel: null, by, changes });
+      // The setter shares no channel via this path (no channel involved at all),
+      // so a forged `:fakeN MODE x +i` flood must not accumulate users.
+      this.#pruneIfOrphan(by);
+      return event;
     }
 
     // Only for a channel we're in. A MODE for one we never joined (a query reply

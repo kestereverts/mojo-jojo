@@ -1,10 +1,14 @@
 // Package-internal capability symbols for the entity layer.
 //
 // These keep the *integrity-sensitive* operations — pushing an event into an
-// entity's stream and completing that stream — off the public API. Only the
-// dispatcher and StateStore import this module, so a consumer holding a
-// `Channel`/`User` reference (e.g. from `client.channel()`) cannot forge events
-// or complete another subscriber's stream. NOT re-exported from `index.ts`.
+// entity's stream and completing that stream — off the ordinary public API. Only
+// the dispatcher and StateStore import this module, and the symbols are NOT
+// re-exported from `index.ts`, so normal consumer code holding a `Channel`/`User`
+// reference (e.g. from `client.channel()`) won't accidentally emit/complete a
+// stream. This is an encapsulation boundary, not a security one: a determined
+// same-process caller can still reach these via reflection
+// (`Object.getOwnPropertySymbols(Object.getPrototypeOf(entity))`). Network/inbound
+// data, which cannot invoke JS methods, can never forge events through it.
 //
 // State-field mutators (rename/setTopic/addMode/…) remain `@internal`-documented
 // methods under the single-writer (StateStore) convention; M5 ("finalize the
