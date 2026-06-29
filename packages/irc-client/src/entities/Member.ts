@@ -11,6 +11,15 @@ const MODE_OP = "o";
 const MODE_HALFOP = "h";
 const MODE_VOICE = "v";
 
+/** An immutable point-in-time view of a {@link Member}'s channel status. */
+export interface MemberSnapshot {
+  readonly nick: string;
+  /** Status mode letters held in the channel (e.g. `["o", "v"]`). */
+  readonly modes: readonly string[];
+  /** Status prefix characters, highest rank first (e.g. `["@", "+"]`). */
+  readonly prefixes: readonly string[];
+}
+
 /**
  * A {@link User}'s membership in one {@link Channel} — the join entity holding
  * channel-scoped status modes (e.g. op `o`, voice `v`). One `User` may have many
@@ -71,6 +80,11 @@ export class Member {
   /** True if the member holds any status mode at all. */
   hasStatus(): boolean {
     return this.#modes.size > 0;
+  }
+
+  /** An immutable snapshot of this member's channel status. */
+  snapshot(): MemberSnapshot {
+    return { nick: this.nick, modes: [...this.#modes], prefixes: this.prefixes };
   }
 
   /** @internal Grant a status mode letter. */

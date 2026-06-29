@@ -3,7 +3,7 @@ import { parseMessage, type Message } from "@mojo-jojo/irc-message";
 import { MAX_CHANNELS, StateStore } from "./StateStore.ts";
 import { Dispatcher } from "./dispatch.ts";
 import { WHOX_TOKEN } from "../protocol/whox.ts";
-import type { IrcEvent } from "../events/types.ts";
+import type { IrcEvent, ModeEvent } from "../events/types.ts";
 
 /** A dispatcher + store wired up, with a helper to feed raw lines. */
 function harness(selfNick = "me"): {
@@ -691,6 +691,98 @@ describe("dispatch — WHOX (354)", () => {
     // Our token, but an untracked nick -> no phantom created.
     h.feed(`:irc 354 me ${WHOX_TOKEN} #chan u host ghost H acct :Real`);
     expect(h.store.user("ghost")).toBeUndefined();
+  });
+});
+
+describe("dispatch — ISUPPORT (005) trailer handling", () => {
+  test("drops the human trailer but parses every token", () => {
+    const h = harness();
+    h.feed(":irc 001 me :hi");
+    h.feed(":irc 005 me CHANTYPES=# PREFIX=(o)@ NETWORK=Test :are supported by this server");
+    expect(h.store.server.isupport.network).toBe("Test");
+    expect(h.store.server.isupport.chanTypes).toBe("#");
+  });
+
+  test("keeps the last token when the server omits the trailer", () => {
+    const h = harness();
+    h.feed(":irc 001 me :hi");
+    // No trailing sentence: the last param is a real token and must not be dropped.
+    h.feed(":irc 005 me CHANTYPES=# NETWORK=NoTrailer");
+    expect(h.store.server.isupport.network).toBe("NoTrailer");
+  });
+});
+
+describe("dispatch — unknown channel modes", () => {
+  test("an unknown mode letter is not stored in the typed modes map", () => {
+    const h = harness();
+    register(h); // CHANMODES=eIbq,k,flj,imnpst -> n,t are D; Z is unknown
+    h.feed(":me!u@h JOIN #chan");
+    const events: ModeEvent[] = [];
+    h.store.channel("#chan")!.modeChanges$.subscribe((e) => events.push(e));
+    h.feed(":op!o@h MODE #chan +Znt");
+    const ch = h.store.channel("#chan")!;
+    expect(ch.modes.has("Z")).toBe(false); // uninterpretable: not stored
+    expect(ch.modes.has("n")).toBe(true); // known D mode still stored
+    expect(ch.modes.has("t")).toBe(true);
+    // ...but the raw change is still surfaced on the ModeEvent.
+    expect(events.some((e) => e.changes.some((c) => c.mode === "Z"))).toBe(true);
+  });
+});
+
+describe("dispatch — snapshot & replay streams", () => {
+  test("topic$ replays the current topic on subscribe, then emits on change", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":someone!s@h TOPIC #chan :first topic");
+    const seen: (string | null)[] = [];
+    h.store.channel("#chan")!.topic$.subscribe((t) => seen.push(t)); // late subscriber
+    expect(seen).toEqual(["first topic"]); // replayed current value
+    h.feed(":someone!s@h TOPIC #chan :second topic");
+    expect(seen).toEqual(["first topic", "second topic"]);
+  });
+
+  test("nick$ replays the current nick on subscribe, then emits on change", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":alice!a@h JOIN #chan");
+    const alice = h.store.user("alice")!;
+    const seen: string[] = [];
+    alice.nick$.subscribe((n) => seen.push(n));
+    expect(seen).toEqual(["alice"]);
+    h.feed(":alice!a@h NICK bob");
+    expect(seen).toEqual(["alice", "bob"]);
+  });
+
+  test("snapshot() captures channel/user/member state as a point-in-time copy", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":alice!a@h JOIN #chan");
+    h.feed(":irc 332 me #chan :the topic");
+    h.feed(":irc 333 me #chan opnick 1700000000"); // topic setter + timestamp
+    h.feed(":op!o@h MODE #chan +o alice");
+    h.feed(":op!o@h MODE #chan +nt");
+
+    const ch = h.store.channel("#chan")!;
+    const snap = ch.snapshot();
+    expect(snap.name).toBe("#chan");
+    expect(snap.topic).toBe("the topic");
+    expect(snap.modes).toEqual({ n: null, t: null });
+    expect(snap.members.find((m) => m.nick === "alice")?.modes).toContain("o");
+    // The Date is copied, not aliased: same instant, distinct instance.
+    expect(snap.topicSetAt).not.toBe(ch.topicSetAt);
+    expect(snap.topicSetAt?.getTime()).toBe(ch.topicSetAt?.getTime());
+
+    const aliceSnap = h.store.user("alice")!.snapshot();
+    expect(aliceSnap.nick).toBe("alice");
+    expect(aliceSnap.isSelf).toBe(false);
+
+    // It's a copy: later changes don't mutate the already-taken snapshot.
+    h.feed(":someone!s@h TOPIC #chan :changed");
+    expect(snap.topic).toBe("the topic");
+    expect(ch.topic).toBe("changed");
   });
 });
 

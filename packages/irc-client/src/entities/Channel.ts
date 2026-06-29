@@ -1,6 +1,7 @@
 import type { Observable } from "rxjs";
 import { ReactiveEntity } from "./ReactiveEntity.ts";
 import { MemberList } from "./MemberList.ts";
+import type { MemberSnapshot } from "./Member.ts";
 import type { Server } from "./Server.ts";
 import type { ModeChange } from "../protocol/modeParser.ts";
 import type {
@@ -28,6 +29,19 @@ import type {
  * Generous enough not to clip a real channel's ban/exception/invite lists.
  */
 const MAX_LIST_ENTRIES = 1000;
+
+/** An immutable point-in-time view of a {@link Channel}'s state. */
+export interface ChannelSnapshot {
+  readonly name: string;
+  readonly topic: string | null;
+  readonly topicSetBy: string | null;
+  readonly topicSetAt: Date | null;
+  /** Non-list modes (B/C/D): mode letter -> param (or `null`). */
+  readonly modes: Readonly<Record<string, string | null>>;
+  /** List modes (A, e.g. `b` bans): mode letter -> masks. */
+  readonly lists: Readonly<Record<string, readonly string[]>>;
+  readonly members: readonly MemberSnapshot[];
+}
 
 /**
  * A joined channel: its topic (with who/when set it), its channel modes, and its
@@ -105,6 +119,10 @@ export class Channel extends ReactiveEntity<ChannelEvent> {
   get topicChanges$(): Observable<TopicEvent> {
     return this.stream("topic");
   }
+  /** Current topic as a replay value-stream: the current topic now, then on each change. */
+  get topic$(): Observable<string | null> {
+    return this.valueStream(() => this.#topic, "topic");
+  }
   get modeChanges$(): Observable<ModeEvent> {
     return this.stream("mode");
   }
@@ -126,6 +144,22 @@ export class Channel extends ReactiveEntity<ChannelEvent> {
   /** Real-name changes for members of this channel (`setname`). */
   get setname$(): Observable<SetnameEvent> {
     return this.stream("setname");
+  }
+
+  /** An immutable snapshot of this channel's current state (topic, modes, members). */
+  snapshot(): ChannelSnapshot {
+    const lists: Record<string, readonly string[]> = {};
+    for (const [mode, masks] of this.#lists) lists[mode] = [...masks];
+    return {
+      name: this.name,
+      topic: this.#topic,
+      topicSetBy: this.#topicSetBy,
+      // Copy the Date so the (immutable) snapshot can't be used to mutate live state.
+      topicSetAt: this.#topicSetAt === null ? null : new Date(this.#topicSetAt),
+      modes: Object.fromEntries(this.#modes),
+      lists,
+      members: [...this.members].map((member) => member.snapshot()),
+    };
   }
 
   /** @internal Set the topic and its provenance. */
@@ -159,7 +193,11 @@ export class Channel extends ReactiveEntity<ChannelEvent> {
       }
       return;
     }
-    // B/C/D non-list modes.
+    // B/C/D non-list modes. Unknown letters (not in this server's CHANMODES) are
+    // NOT stored in the typed map — we can't interpret them, and guessing could
+    // desync param tracking — but the raw ModeEvent the dispatcher emits still
+    // surfaces the change for consumers that handle it specifically.
+    if (kind === "unknown") return;
     if (added) {
       this.#modes.set(mode, param);
     } else {

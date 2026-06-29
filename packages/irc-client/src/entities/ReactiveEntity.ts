@@ -1,4 +1,4 @@
-import { Observable, Subject } from "rxjs";
+import { Observable, Subject, defer, distinctUntilChanged, map, merge, startWith } from "rxjs";
 import { DISPOSE, EMIT } from "./internal.ts";
 import { EventFacade, type Unsubscribe } from "./EventFacade.ts";
 
@@ -65,5 +65,32 @@ export abstract class ReactiveEntity<E extends { type: string }> {
   /** Build a derived named stream filtered to a single event type. */
   protected stream<T extends E["type"]>(type: T): Observable<Extract<E, { type: T }>> {
     return this.#facade.stream(type);
+  }
+
+  /**
+   * Build a **replay value-stream**: emits the value read by `read()` immediately
+   * on subscribe (the current snapshot), then again — deduplicated — after every
+   * event of any of `types`. Use for "current value, then updates" scalar state
+   * like a channel topic or a nick. `defer` captures the value at *subscribe*
+   * time, so a late subscriber gets the up-to-date value, not a stale one. The
+   * value is re-read from `read()` after each event, so it reflects the mutation
+   * the dispatcher applied before emitting. Completes when the entity is disposed.
+   *
+   * Only suitable for fields whose every change emits one of `types`; fields also
+   * mutated silently (e.g. account/realname enriched by WHO) won't update here —
+   * read those via {@link snapshot}-style getters instead. Intended for
+   * scalar/primitive values: dedup uses `distinctUntilChanged`'s default
+   * (SameValueZero) equality, which is reference-based for objects.
+   */
+  protected valueStream<V>(read: () => V, ...types: ReadonlyArray<E["type"]>): Observable<V> {
+    return defer(() => {
+      const sources = types.map((type) => this.stream(type));
+      const changes = sources.length === 1 ? sources[0]! : merge(...sources);
+      return changes.pipe(
+        map(() => read()),
+        startWith(read()),
+        distinctUntilChanged(),
+      );
+    });
   }
 }

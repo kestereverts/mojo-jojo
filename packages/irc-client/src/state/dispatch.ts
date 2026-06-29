@@ -171,8 +171,15 @@ export class Dispatcher {
   }
 
   #isupport(message: Message): null {
-    // params: <nick> <token>... :are supported by this server
-    const tokens = message.params.slice(1, Math.max(1, message.params.length - 1));
+    // params: <nick> <token>... [:are supported by this server]
+    // Drop the leading nick, then the trailing human-readable sentence — but only
+    // if it IS one: that trailer always contains a space, while an ISUPPORT token
+    // never does (`KEY` / `KEY=value`, spaces escaped as `\x20`). Blindly dropping
+    // the last param would discard a real token from a server that omits the
+    // trailer.
+    const params = message.params.slice(1);
+    const last = params[params.length - 1];
+    const tokens = last !== undefined && last.includes(" ") ? params.slice(0, -1) : params;
     this.#store.applyIsupport(tokens);
     return null;
   }

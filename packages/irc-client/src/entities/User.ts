@@ -14,6 +14,17 @@ import type {
   UserEvent,
 } from "../events/types.ts";
 
+/** An immutable point-in-time view of a {@link User}'s state. */
+export interface UserSnapshot {
+  readonly nick: string;
+  readonly username: string | null;
+  readonly host: string | null;
+  readonly realName: string | null;
+  readonly account: string | null;
+  readonly away: boolean;
+  readonly isSelf: boolean;
+}
+
 /**
  * A single network identity (one per nick, case-insensitively). Tracks the
  * user's current nick and the latest `user`/`host`/`realName`/`account` learned
@@ -64,6 +75,24 @@ export class User extends ReactiveEntity<UserEvent> {
   /** `true` if this identity is us. */
   get isSelf(): boolean {
     return this.#isSelf;
+  }
+
+  /** Current nick as a replay value-stream: the current nick now, then on each change. */
+  get nick$(): Observable<string> {
+    return this.valueStream(() => this.#nick, "nick");
+  }
+
+  /** An immutable snapshot of this user's current state. */
+  snapshot(): UserSnapshot {
+    return {
+      nick: this.#nick,
+      username: this.#username,
+      host: this.#host,
+      realName: this.#realName,
+      account: this.#account,
+      away: this.#away,
+      isSelf: this.#isSelf,
+    };
   }
 
   /** Messages this user sent. */

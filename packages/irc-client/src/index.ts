@@ -56,9 +56,9 @@ export * as eventFactory from "./events/factory.ts";
 // State entities (M3)
 export { ReactiveEntity, type Unsubscribe } from "./entities/ReactiveEntity.ts";
 export { Server } from "./entities/Server.ts";
-export { Channel } from "./entities/Channel.ts";
-export { User } from "./entities/User.ts";
-export { Member } from "./entities/Member.ts";
+export { Channel, type ChannelSnapshot } from "./entities/Channel.ts";
+export { User, type UserSnapshot } from "./entities/User.ts";
+export { Member, type MemberSnapshot } from "./entities/Member.ts";
 export { MemberList, type MembersByNick } from "./entities/MemberList.ts";
 
 // State store + dispatch (M3)

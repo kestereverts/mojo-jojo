@@ -96,6 +96,18 @@ suite("live smoke: irc-client end-to-end (IRC_SMOKE=1)", () => {
           `[smoke] joined ${CHANNEL}; members=${channel.members.size}; topic=${channel.topic ?? "(none)"}`,
         );
 
+        // snapshot() captures current state; topic$ replays it on subscribe.
+        const snap = channel.snapshot();
+        expect(snap.name).toBe(CHANNEL);
+        expect(snap.members.length).toBe(channel.members.size);
+        let topicReplayed = false;
+        channel.topic$.subscribe(() => (topicReplayed = true)).unsubscribe();
+        expect(topicReplayed).toBe(true); // replayed synchronously on subscribe
+        console.log(
+          `[smoke] snapshot: ${snap.members.length} member(s), ` +
+            `modes=${Object.keys(snap.modes).join("") || "(none)"}; topic$ replay ok`,
+        );
+
         // Send a message; with echo-message, confirm it round-trips back to us.
         const marker = `mojo-jojo M5 smoke ${Date.now()}`;
         client.say(CHANNEL, marker);
