@@ -105,8 +105,14 @@ export class MemberList implements Iterable<Member> {
     this.#members.set(newNick, member);
   }
 
-  /** @internal Re-fold all member keys under a new casemapping. */
+  /**
+   * @internal Re-fold all member keys under a new casemapping. A {@link Member}
+   * holds no event stream, so a collision needs no disposal — the displaced
+   * member is simply dropped. We do, however, keep our own self membership on a
+   * collision, so a channel never ends up holding a member that references a
+   * soon-disposed non-self user instead of us.
+   */
   rekey(mapper: CaseMapper): void {
-    this.#members.rekey(mapper);
+    this.#members.rekey(mapper, (_incoming, existing) => !existing.user.isSelf);
   }
 }

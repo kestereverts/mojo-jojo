@@ -71,15 +71,25 @@ export class Server {
    * @internal Apply ISUPPORT tokens from a `005` line. If the casemapping
    * changed, swap the {@link CaseMapper} and re-fold every keyed collection
    * (channels, users, and each channel's member list) so lookups stay correct.
+   *
+   * Returns the channels and users **displaced by a name collision** under the
+   * new mapping (two distinct names folding to one) — they've been removed from
+   * the maps but still own live event streams, so the caller (StateStore) must
+   * dispose them. Empty when nothing collided (the common case).
    */
-  applyIsupport(tokens: readonly string[]): void {
+  applyIsupport(tokens: readonly string[]): { channels: Channel[]; users: User[] } {
     const previousMapping = this.#isupport.caseMapping;
     this.#isupport = parseIsupport(tokens, this.#isupport);
-    if (this.#isupport.caseMapping !== previousMapping) {
-      this.#caseMapper = new CaseMapper(this.#isupport.caseMapping);
-      this.channels.rekey(this.#caseMapper);
-      this.users.rekey(this.#caseMapper);
-      for (const channel of this.channels.values()) channel.members.rekey(this.#caseMapper);
+    if (this.#isupport.caseMapping === previousMapping) {
+      return { channels: [], users: [] };
     }
+    this.#caseMapper = new CaseMapper(this.#isupport.caseMapping);
+    const channels = this.channels.rekey(this.#caseMapper);
+    // Our own identity must always win a user collision (regardless of insertion
+    // order), so its stream/lookup survive and the displaced list — which the
+    // caller disposes — can never contain self. The usurper is the one returned.
+    const users = this.users.rekey(this.#caseMapper, (_incoming, existing) => !existing.isSelf);
+    for (const channel of this.channels.values()) channel.members.rekey(this.#caseMapper);
+    return { channels, users };
   }
 }

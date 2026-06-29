@@ -288,6 +288,92 @@ describe("dispatch — casemapping", () => {
     // rfc1459 folds [] -> {}
     expect(h.store.channel("#chan")?.members.get("nick{}")).toBeDefined();
   });
+
+  test("a casemapping change that collides two nicks disposes the displaced user", () => {
+    const h = harness();
+    h.feed(":irc 001 me :hi");
+    // Start on ascii, where Nick[] and Nick{} are DISTINCT (no []<->{} folding).
+    h.feed(":irc 005 me CASEMAPPING=ascii CHANTYPES=# PREFIX=(o)@ :are supported");
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":Nick[]!a@h JOIN #chan");
+    h.feed(":Nick{}!b@h JOIN #chan");
+    expect(h.store.server.users.size).toBe(3); // me, Nick[], Nick{}
+
+    let disposed = false;
+    h.store.user("Nick[]")!.events$.subscribe({ complete: () => (disposed = true) });
+
+    // Switch to rfc1459: [] now folds to {}, so the two nicks collide on rekey.
+    h.feed(":irc 005 me CASEMAPPING=rfc1459 :are supported");
+    expect(disposed).toBe(true); // displaced user's stream completed — no leaked Subject
+    expect(h.store.server.users.size).toBe(2); // me + the surviving nick
+    expect(h.store.channel("#chan")?.members.size).toBe(2); // me + one member (collapsed)
+  });
+
+  test("a casemapping collision never disposes the self user (the usurper loses)", () => {
+    const h = harness("Me[]"); // our own nick is Me[]
+    h.feed(":irc 001 Me[] :hi");
+    h.feed(":irc 005 Me[] CASEMAPPING=ascii CHANTYPES=# PREFIX=(o)@ :are supported");
+    h.feed(":Me[]!u@h JOIN #chan"); // self join (self user inserted first)
+    h.feed(":Me{}!x@h JOIN #chan"); // a distinct user that will collide under rfc1459
+    expect(h.store.server.users.size).toBe(2);
+
+    let selfDisposed = false;
+    let usurperDisposed = false;
+    h.store.user("Me[]")!.events$.subscribe({ complete: () => (selfDisposed = true) });
+    h.store.user("Me{}")!.events$.subscribe({ complete: () => (usurperDisposed = true) });
+
+    // [] folds to {} under rfc1459; self (inserted first) would otherwise be evicted.
+    h.feed(":irc 005 Me[] CASEMAPPING=rfc1459 :are supported");
+    expect(selfDisposed).toBe(false); // our identity stream is preserved
+    expect(usurperDisposed).toBe(true); // the non-self user is the one disposed
+    expect(h.store.user(h.store.server.nick)?.isSelf).toBe(true); // self lookup still resolves to us
+    expect(h.store.server.users.size).toBe(1);
+    // ...and channel membership is repaired too: our own Member survives the
+    // collision rather than one pointing at the disposed non-self user.
+    expect(h.store.channel("#chan")?.members.get(h.store.server.nick)?.user.isSelf).toBe(true);
+    expect(h.store.channel("#chan")?.members.size).toBe(1);
+  });
+
+  test("a channel collision prunes users orphaned by the disposed channel", () => {
+    const h = harness("me");
+    h.feed(":irc 001 me :hi");
+    h.feed(":irc 005 me CASEMAPPING=ascii CHANTYPES=# :are supported");
+    h.feed(":me!u@h JOIN #a[]"); // self in both (distinct channels under ascii)
+    h.feed(":me!u@h JOIN #a{}");
+    h.feed(":bob!b@h JOIN #a[]"); // bob lives ONLY in #a[]
+    expect(h.store.server.channels.size).toBe(2);
+    let bobDisposed = false;
+    h.store.user("bob")!.events$.subscribe({ complete: () => (bobDisposed = true) });
+
+    // rfc1459 folds [] <-> {}, so #a[] and #a{} collide; #a[] is displaced.
+    h.feed(":irc 005 me CASEMAPPING=rfc1459 :are supported");
+    expect(h.store.server.channels.size).toBe(1); // one channel survives
+    expect(bobDisposed).toBe(true); // bob, orphaned by the disposed channel, is pruned
+    expect(h.store.user("bob")).toBeUndefined();
+  });
+
+  test("divergent global/channel collision winners leave no disposed user reachable", () => {
+    // Global and per-channel maps rekey independently, so the collision winner can
+    // differ between them. The invariant that must hold afterwards: every channel
+    // member references the live, canonical user for its nick (no disposed user).
+    const h = harness("me");
+    h.feed(":irc 001 me :hi");
+    h.feed(":irc 005 me CASEMAPPING=ascii CHANTYPES=# :are supported");
+    h.feed(":me!u@h JOIN #other");
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":Nick[]!a@h JOIN #other"); // Nick[] seen first globally
+    h.feed(":Nick{}!b@h JOIN #chan"); // Nick{} seen first in #chan
+    h.feed(":Nick[]!a@h JOIN #chan"); // Nick[] later in #chan (channel winner != global winner)
+    h.feed(":irc 005 me CASEMAPPING=rfc1459 :are supported"); // [] folds to {} -> collide
+
+    for (const name of ["#other", "#chan"]) {
+      const channel = h.store.channel(name);
+      for (const member of channel?.members ?? []) {
+        // member.user must be the same object the global map resolves for its nick.
+        expect(h.store.user(member.nick)).toBe(member.user);
+      }
+    }
+  });
 });
 
 describe("dispatch — source classification (server vs user)", () => {

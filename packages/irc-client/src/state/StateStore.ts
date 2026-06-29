@@ -45,7 +45,32 @@ export class StateStore {
 
   /** Apply a `005` line's ISUPPORT tokens (handles casemapping re-keying). */
   applyIsupport(tokens: readonly string[]): void {
-    this.server.applyIsupport(tokens);
+    // A casemapping change can collide two distinct names into one; dispose the
+    // entities the rekey displaced so their streams complete (no leak).
+    const { channels, users } = this.server.applyIsupport(tokens);
+    for (const channel of channels) {
+      // Dispose the displaced channel, then GC any member left with no remaining
+      // channel (same discipline as a self-PART/KICK), so users that lived only
+      // in the disposed channel don't linger with a live stream.
+      const formerMembers = [...channel.members];
+      channel[DISPOSE]();
+      for (const member of formerMembers) this.pruneOrphan(member.nick);
+    }
+    for (const user of users) {
+      // The per-channel member maps rekey independently of the global user map, so
+      // a surviving channel can still hold a Member that references this displaced
+      // (loser) user. Drop those by object identity so no disposed user remains
+      // reachable from channel state. (A mid-session casemapping collision thus
+      // drops the membership rather than merging the two identities — an identity
+      // merge is out of scope for this non-conformant case; the surviving user
+      // stays tracked in `users`.)
+      for (const channel of this.server.channels.values()) {
+        for (const member of [...channel.members]) {
+          if (member.user === user) channel.members.remove(member.nick);
+        }
+      }
+      user[DISPOSE]();
+    }
   }
 
   getOrCreateUser(nick: string): User {

@@ -93,16 +93,37 @@ export class IrcMap<V> implements Iterable<[string, V]> {
 
   /**
    * Re-fold every entry under `mapper`. Call when the server's `CASEMAPPING`
-   * changes so subsequent case-insensitive lookups stay correct. If two
-   * existing display names collide under the new mapping, the later one wins.
+   * changes so subsequent case-insensitive lookups stay correct. If two existing
+   * display names collide under the new mapping (e.g. `Nick[]` and `Nick{}` once
+   * `rfc1459` folds `[]`↔`{}`), one wins and the **loser is returned** so the
+   * owner can dispose it (its value would otherwise be dropped with no cleanup).
+   * Returns `[]` when there are no collisions.
+   *
+   * `preferIncoming(incoming, existing)` decides each collision: it defaults to
+   * "later wins" (return `true`), but callers override it to protect a special
+   * entry — e.g. the member/user maps keep our own self entry regardless of order.
    */
-  rekey(mapper: CaseMapper): void {
+  rekey(
+    mapper: CaseMapper,
+    preferIncoming: (incoming: V, existing: V) => boolean = () => true,
+  ): V[] {
     const entries = [...this.#entries.values()];
     this.#entries.clear();
     this.#mapper = mapper;
+    const displaced: V[] = [];
     for (const entry of entries) {
-      this.#entries.set(mapper.normalize(entry.key), entry);
+      const normalized = mapper.normalize(entry.key);
+      const existing = this.#entries.get(normalized);
+      if (existing === undefined) {
+        this.#entries.set(normalized, entry);
+      } else if (preferIncoming(entry.value, existing.value)) {
+        displaced.push(existing.value); // existing loses
+        this.#entries.set(normalized, entry);
+      } else {
+        displaced.push(entry.value); // incoming loses; keep existing
+      }
     }
+    return displaced;
   }
 }
 
@@ -143,6 +164,7 @@ export class IrcSet implements Iterable<string> {
   }
 
   rekey(mapper: CaseMapper): void {
+    // Set values are `true` (no entities), so a collision needs no cleanup.
     this.#map.rekey(mapper);
   }
 }
