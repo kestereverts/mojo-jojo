@@ -15,9 +15,21 @@ export interface ModuleStorage {
   delete(key: string): Promise<void>;
 }
 
-/** In-memory {@link ModuleStorage}; one instance per module (namespace = isolation). */
+const DEFAULT_MAX_ENTRIES = 10_000;
+
+/**
+ * In-memory {@link ModuleStorage}; one instance per module (namespace = isolation).
+ * Hard-bounded at `maxEntries` (oldest-inserted evicted) so a module keying by
+ * untrusted input (per-nick `seen`/`tell`/…) can't grow it without bound. A module
+ * needing more should manage its own capacity.
+ */
 export class MemoryStorage implements ModuleStorage {
   readonly #map = new Map<string, unknown>();
+  readonly #maxEntries: number;
+
+  constructor(maxEntries = DEFAULT_MAX_ENTRIES) {
+    this.#maxEntries = Math.max(1, maxEntries);
+  }
 
   // `get`/`set` are `async` so a `structuredClone` throw on a non-cloneable value
   // surfaces as a rejected promise (matching the async contract), not a sync throw.
@@ -27,7 +39,12 @@ export class MemoryStorage implements ModuleStorage {
   }
 
   async set(key: string, value: unknown): Promise<void> {
-    this.#map.set(key, structuredClone(value));
+    const cloned = structuredClone(value);
+    if (!this.#map.has(key) && this.#map.size >= this.#maxEntries) {
+      const oldest = this.#map.keys().next().value;
+      if (oldest !== undefined) this.#map.delete(oldest);
+    }
+    this.#map.set(key, cloned);
   }
 
   async has(key: string): Promise<boolean> {

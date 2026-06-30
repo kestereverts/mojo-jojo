@@ -2,6 +2,7 @@ import { EMPTY, type Observable, Subject, catchError, defer, filter, finalize, m
 import type { IrcClient, PrivmsgEvent } from "@mojo-jojo/irc-client";
 import type { Cooldowns } from "../abuse/cooldown.ts";
 import type { IgnoreList } from "../abuse/ignore.ts";
+import type { RateLimiter } from "../abuse/rateLimiter.ts";
 import type { BotEventHub } from "../events/botEvents.ts";
 import type { Logger } from "../logging/logger.ts";
 import type { BotApi, Disposer, MaybePromise } from "../module/types.ts";
@@ -13,6 +14,7 @@ import type { Command, CommandContext } from "./types.ts";
 
 const DEFAULT_CONCURRENCY = 8;
 const DEFAULT_HANDLER_TIMEOUT_MS = 30_000;
+const LOG_THROTTLE_MS = 5_000; // cap warn-spam from a flood hitting the same drop path
 
 export interface CommandRouterDeps {
   readonly client: IrcClient;
@@ -21,6 +23,8 @@ export interface CommandRouterDeps {
   readonly events: BotEventHub;
   readonly cooldowns: Cooldowns;
   readonly ignore: IgnoreList;
+  /** Per-sender command rate limit applied to ALL commands; `null` disables it. */
+  readonly rateLimiter: RateLimiter | null;
   readonly prefix: string;
   readonly allowPrefixlessInPm: boolean;
   /** Max concurrent handlers (blast-radius bound, not ordering). Default 8. */
@@ -32,6 +36,13 @@ export interface CommandRouterDeps {
 interface CommandEntry {
   readonly command: Command;
   readonly module: string;
+}
+
+interface Prepared {
+  readonly command: Command;
+  readonly ctx: CommandContext;
+  readonly module: string;
+  readonly controller: AbortController;
 }
 
 function asError(value: unknown): Error {
@@ -133,7 +144,7 @@ export class CommandRouter {
    * denials never consume a handler slot. The cooldown commit happens later in
    * `#admit` (after overload admission), so a dropped command keeps its cooldown.
    */
-  #prepare(event: PrivmsgEvent): { command: Command; ctx: CommandContext; module: string } | null {
+  #prepare(event: PrivmsgEvent): Prepared | null {
     const requirePrefix = !event.isPrivate || !this.#deps.allowPrefixlessInPm;
     const parsed = parseCommandLine(this.#deps.prefix, event.text, { requirePrefix });
     if (!parsed) return null;
@@ -147,7 +158,8 @@ export class CommandRouter {
       return null;
     }
 
-    const ctx = this.#context(event, command, module, parsed.args, parsed.argLine);
+    const controller = new AbortController();
+    const ctx = this.#context(event, command, module, parsed.args, parsed.argLine, controller.signal);
 
     let allowed: boolean;
     try {
@@ -163,7 +175,7 @@ export class CommandRouter {
       return null;
     }
 
-    return { command, ctx, module };
+    return { command, ctx, module, controller };
   }
 
   /**
@@ -178,7 +190,17 @@ export class CommandRouter {
 
     if (this.#inFlight >= this.#maxConcurrency) {
       this.#deps.events.emit({ type: "commandDenied", command: command.name, reason: "overloaded", event });
-      this.#deps.log.warn(`dropped "${command.name}": ${this.#maxConcurrency} handlers already in flight`);
+      // Throttle the warn so a sustained flood can't amplify into a log-output DoS.
+      if (this.#deps.cooldowns.check("log:overloaded", LOG_THROTTLE_MS)) {
+        this.#deps.log.warn(`dropping commands: ${this.#maxConcurrency} handlers already in flight`);
+      }
+      return EMPTY;
+    }
+
+    // Per-sender command rate limit, applied to ALL commands (independent of cooldownMs),
+    // so one user can't keep the bot at its max output rate network-wide.
+    if (this.#deps.rateLimiter && !this.#deps.rateLimiter.tryConsume(this.#userKey(event))) {
+      this.#deps.events.emit({ type: "commandDenied", command: command.name, reason: "ratelimited", event });
       return EMPTY;
     }
 
@@ -202,14 +224,11 @@ export class CommandRouter {
     );
   }
 
-  async #run(
-    prepared: { command: Command; ctx: CommandContext; module: string },
-    event: PrivmsgEvent,
-  ): Promise<void> {
-    const { command, ctx, module } = prepared;
+  async #run(prepared: Prepared, event: PrivmsgEvent): Promise<void> {
+    const { command, ctx, module, controller } = prepared;
     this.#deps.events.emit({ type: "commandInvoked", command: command.name, event });
     try {
-      await this.#runWithTimeout(command.handler(ctx));
+      await this.#runWithTimeout(command.handler(ctx), controller);
     } catch (error) {
       this.#deps.events.emit({ type: "commandError", command: command.name, event, error: asError(error) });
       this.#deps.log.child(module).error(`command "${command.name}" failed`, error);
@@ -222,6 +241,7 @@ export class CommandRouter {
     module: string,
     args: readonly string[],
     argLine: string,
+    signal: AbortSignal,
   ): CommandContext {
     const { client } = this.#deps;
     const log = this.#deps.log.child(module);
@@ -233,6 +253,7 @@ export class CommandRouter {
       argLine,
       bot: this.#deps.bot,
       log,
+      signal,
       reply: (text) => safeSay(client, target, text, log),
       replyPrivate: (text) => safeNotice(client, event.user.nick, text, log),
       cooldown: (key, ms) => this.#deps.cooldowns.check(`cmdctx:${command.name}:${key}`, ms),
@@ -245,14 +266,19 @@ export class CommandRouter {
     return senderKey(event, this.#deps.client.server?.caseMapper ?? null);
   }
 
-  /** Await a handler with a timeout that frees the concurrency slot (cannot abort the work). */
-  #runWithTimeout(result: MaybePromise<void>): Promise<void> {
+  /**
+   * Await a handler with a timeout that frees the concurrency slot and ABORTS the
+   * context signal (so a cooperative handler can cancel its own in-flight work). It
+   * still cannot forcibly stop non-cooperative or synchronous work.
+   */
+  #runWithTimeout(result: MaybePromise<void>, controller: AbortController): Promise<void> {
     const ms = this.#deps.handlerTimeoutMs ?? DEFAULT_HANDLER_TIMEOUT_MS;
     return new Promise<void>((resolve, reject) => {
       let settled = false;
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
+        controller.abort();
         reject(new Error(`handler timed out after ${ms}ms`));
       }, ms);
       Promise.resolve(result).then(

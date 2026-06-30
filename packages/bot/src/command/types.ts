@@ -27,6 +27,8 @@ export interface CommandContext {
   readonly argLine: string;
   readonly bot: BotApi;
   readonly log: Logger;
+  /** Aborts when the handler exceeds the dispatch timeout; long work should respect it. */
+  readonly signal: AbortSignal;
   /** Reply to the channel (or the sender in a PM) via PRIVMSG. Safe: returns false if dropped, never throws. */
   reply(text: string): boolean;
   /** Reply privately to the sender via NOTICE. Safe. */

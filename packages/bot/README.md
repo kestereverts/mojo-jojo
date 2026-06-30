@@ -78,3 +78,8 @@ current working directory or the importing module — and the loader passes each
   catches that and drops the send, so untrusted text can never inject a wire command.
 - **External modules** run with full process privilege — the config file is a trust boundary
   equal to the bot's own code. Don't load config from an untrusted source.
+- **Abuse / resource bounds:** a per-sender command **token bucket** (`bot.commandBurst` /
+  `commandRefillMs`, default burst 5 + 1/s) caps how fast one user can drive output; dispatch
+  concurrency is bounded with a per-handler timeout (which aborts `ctx.signal`); cooldowns,
+  the rate-limiter key table, and `MemoryStorage` are all hard-bounded; drop/overload logs are
+  throttled. One user cannot flood the bot's output or grow its memory without bound.

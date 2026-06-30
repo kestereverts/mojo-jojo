@@ -16,6 +16,7 @@ import { IgnoreList } from "./abuse/ignore.ts";
 import { CommandRouter } from "./command/CommandRouter.ts";
 import { matchOwner } from "./command/permissions.ts";
 import { isSecureMatcher } from "./identity/match.ts";
+import { RateLimiter } from "./abuse/rateLimiter.ts";
 import { ModuleRegistry } from "./module/registry.ts";
 import { loadExternalModule } from "./module/loadExternal.ts";
 import { ModuleHost, type ModuleHostDeps } from "./module/ModuleHost.ts";
@@ -97,6 +98,10 @@ export class Bot {
       events: this.#events,
       cooldowns: this.#cooldowns,
       ignore: this.#ignore,
+      rateLimiter:
+        config.bot.commandRefillMs > 0
+          ? new RateLimiter({ capacity: config.bot.commandBurst, refillMs: config.bot.commandRefillMs })
+          : null,
       prefix: config.bot.prefix,
       allowPrefixlessInPm: config.bot.allowPrefixlessInPm,
     });

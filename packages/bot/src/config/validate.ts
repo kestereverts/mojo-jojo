@@ -303,6 +303,8 @@ export function validateConfig(raw: unknown, configDir: string): BotConfig {
     allowPrefixlessInPm: v.optBoolean(botRaw.allowPrefixlessInPm, "bot.allowPrefixlessInPm") ?? true,
     failOnModuleError: v.optBoolean(botRaw.failOnModuleError, "bot.failOnModuleError") ?? false,
     logLevel: (v.optEnum(botRaw.logLevel, "bot.logLevel", LOG_LEVELS) ?? "info") satisfies LogLevel,
+    commandBurst: v.optIntegerInRange(botRaw.commandBurst, "bot.commandBurst", 1, 1000) ?? 5,
+    commandRefillMs: v.optNonNegativeNumber(botRaw.commandRefillMs, "bot.commandRefillMs") ?? 1000,
   };
 
   const modules = validateModules(v, root.modules, "modules");

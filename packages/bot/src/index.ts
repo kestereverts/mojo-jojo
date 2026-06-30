@@ -50,6 +50,7 @@ export {
 
 // --- Abuse controls (M2) ---
 export { Cooldowns, systemClock, type Clock } from "./abuse/cooldown.ts";
+export { RateLimiter, type RateLimiterOptions } from "./abuse/rateLimiter.ts";
 export { IgnoreList } from "./abuse/ignore.ts";
 export { matchesAny, matchesIdentity, normalizeAccount, resolveAccount, senderKey } from "./identity/match.ts";
 

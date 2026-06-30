@@ -3,8 +3,11 @@ import type { PrivmsgEvent } from "@mojo-jojo/irc-client";
 
 /** Phase of a module lifecycle failure. */
 export type ModulePhase = "config" | "setup" | "dispose";
-/** Why a command was not run. (`overloaded` = the concurrency bound was saturated.) */
-export type CommandDeniedReason = "permission" | "cooldown" | "ignored" | "overloaded";
+/**
+ * Why a command was not run. `overloaded` = the concurrency bound was saturated;
+ * `ratelimited` = the sender exceeded the per-user command rate.
+ */
+export type CommandDeniedReason = "permission" | "cooldown" | "ignored" | "overloaded" | "ratelimited";
 
 /** Framework-domain events (distinct from IRC protocol traffic). */
 export type BotEvent =

@@ -45,6 +45,10 @@ ignore = [] # same matcher forms; matched senders are dropped before dispatch
 allowPrefixlessInPm = true
 failOnModuleError = false # true = a module that fails to load aborts startup
 logLevel = "info"         # debug | info | warn | error | silent
+# Per-sender command rate limit (token bucket): a burst of `commandBurst`, refilling one
+# command every `commandRefillMs`. Bounds how fast one user can drive the bot's output.
+commandBurst = 5
+commandRefillMs = 1000 # set to 0 to disable the rate limit entirely
 
 # A [modules.<name>] table enables and configures a module (presence = enabled).
 [modules.ping]

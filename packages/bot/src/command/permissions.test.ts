@@ -24,6 +24,7 @@ function ctx(opts: { sender?: FakeSender; owners?: string[] } = {}): CommandCont
     argLine: "",
     bot,
     log,
+    signal: new AbortController().signal,
     reply: () => true,
     replyPrivate: () => true,
     cooldown: () => true,

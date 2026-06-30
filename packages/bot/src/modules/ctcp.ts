@@ -35,10 +35,12 @@ export function ctcpModule(): Module<CtcpConfig> {
           takeUntil(ctx.destroyed$),
         )
         .subscribe((event) => {
-          if (event.user.isSelf || ctx.isIgnored(event)) return;
           const text = event.text;
-          // A non-ACTION CTCP is `\x01TAG args\x01` (ACTION already became an `action` event).
+          // Cheapest test first: a non-ACTION CTCP is `\x01TAG args\x01` (ACTION already
+          // became an `action` event). ~99% of channel chatter fails here and skips the
+          // (potentially large) ignore-list glob scan below.
           if (text.length < 2 || !text.startsWith(CTCP) || !text.endsWith(CTCP)) return;
+          if (event.user.isSelf || ctx.isIgnored(event)) return;
           const [tag, ...rest] = text.slice(1, -1).split(" ");
 
           let body: string | null = null;

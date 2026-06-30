@@ -4,6 +4,7 @@ import { CaseMapper, type ClientEvent, type IrcClient } from "@mojo-jojo/irc-cli
 import { CommandRouter, type CommandRouterDeps } from "./CommandRouter.ts";
 import type { Command } from "./types.ts";
 import { Cooldowns, type Clock } from "../abuse/cooldown.ts";
+import { RateLimiter } from "../abuse/rateLimiter.ts";
 import { IgnoreList } from "../abuse/ignore.ts";
 import { BotEventHub, type BotEvent } from "../events/botEvents.ts";
 import { ConsoleLogger } from "../logging/logger.ts";
@@ -32,6 +33,7 @@ function harness(over: Partial<CommandRouterDeps> = {}) {
     events: hub,
     cooldowns: new Cooldowns(),
     ignore: new IgnoreList(),
+    rateLimiter: null,
     prefix: "!",
     allowPrefixlessInPm: true,
     ...over,
@@ -45,6 +47,40 @@ function harness(over: Partial<CommandRouterDeps> = {}) {
 }
 
 const ping: Command = { name: "ping", description: "pong", handler: (ctx) => void ctx.reply("pong") };
+
+describe("CommandRouter abuse controls", () => {
+  test("per-sender rate limit denies past the burst (all commands)", async () => {
+    const rl = new RateLimiter({ capacity: 1, refillMs: 10_000, clock: { now: () => 0 } });
+    const h = harness({ rateLimiter: rl });
+    h.router.add(ping, "test");
+    h.emit({ text: "!ping" });
+    await tick();
+    h.emit({ text: "!ping" });
+    await tick();
+    expect(h.says).toEqual([["#chan", "pong"]]); // only the first ran
+    expect(h.denials()).toContain("ratelimited");
+  });
+
+  test("a handler timeout aborts the context signal", async () => {
+    let aborted = false;
+    const slow: Command = {
+      name: "slow",
+      description: "never settles",
+      handler: (c) =>
+        new Promise<void>(() => {
+          c.signal.addEventListener("abort", () => {
+            aborted = true;
+          });
+        }),
+    };
+    const h = harness({ handlerTimeoutMs: 10 });
+    h.router.add(slow, "test");
+    h.emit({ text: "!slow" });
+    await tick(40);
+    expect(aborted).toBe(true);
+    expect(h.seen.some((e) => e.type === "commandError" && e.command === "slow")).toBe(true);
+  });
+});
 
 describe("CommandRouter", () => {
   test("dispatches a known command and replies", async () => {

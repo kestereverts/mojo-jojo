@@ -14,6 +14,20 @@ describe("MemoryStorage", () => {
     expect(await s.get("k")).toBeUndefined();
   });
 
+  test("is hard-bounded — evicts the oldest entry past maxEntries", async () => {
+    const s = new MemoryStorage(2);
+    await s.set("a", 1);
+    await s.set("b", 2);
+    await s.set("c", 3); // over the bound → "a" (oldest) evicted
+    expect(await s.has("a")).toBe(false);
+    expect(await s.has("b")).toBe(true);
+    expect(await s.has("c")).toBe(true);
+    // Updating an existing key is not an insertion — it must not evict.
+    await s.set("b", 22);
+    expect(await s.has("c")).toBe(true);
+    expect(await s.get<number>("b")).toBe(22);
+  });
+
   test("stores by value, not by reference (no aliasing through retained refs)", async () => {
     const s = new MemoryStorage();
     const obj = { count: 1, nested: { v: 1 } };

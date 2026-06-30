@@ -26,6 +26,8 @@ describe("validateConfig", () => {
       allowPrefixlessInPm: true,
       failOnModuleError: false,
       logLevel: "info",
+      commandBurst: 5,
+      commandRefillMs: 1000,
     });
     expect(cfg.modules).toEqual({});
     expect(cfg.externalModules).toEqual([]);

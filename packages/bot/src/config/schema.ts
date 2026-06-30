@@ -41,6 +41,10 @@ export interface BotSettings {
   /** When `true`, a module that fails to load aborts startup; otherwise it is skipped + warned. */
   readonly failOnModuleError: boolean;
   readonly logLevel: LogLevel;
+  /** Per-sender command rate limit: max instantaneous burst of commands. */
+  readonly commandBurst: number;
+  /** Per-sender command rate limit: milliseconds to regain one command token (0 disables). */
+  readonly commandRefillMs: number;
 }
 
 /** One `[modules.<name>]` entry: an enabled flag plus the module's opaque option slice. */
