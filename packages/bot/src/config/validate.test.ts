@@ -106,6 +106,12 @@ describe("validateConfig", () => {
     expect(issuesOf({ server: { host: "h", nick: "n" }, externalModules: [1] }).some((i) => i.startsWith("externalModules"))).toBe(true);
   });
 
+  test("rejects a prototype-polluting module key", () => {
+    // JSON.parse creates an OWN `__proto__` property (unlike an object literal).
+    const raw = JSON.parse('{"server":{"host":"h","nick":"n"},"modules":{"__proto__":{}}}');
+    expect(issuesOf(raw).some((i) => i.includes("__proto__") && i.includes("reserved"))).toBe(true);
+  });
+
   test("invalid logLevel fails with the allowed set", () => {
     const issues = issuesOf({ server: { host: "h", nick: "n" }, bot: { logLevel: "loud" } });
     expect(issues.some((i) => i.startsWith("bot.logLevel:"))).toBe(true);

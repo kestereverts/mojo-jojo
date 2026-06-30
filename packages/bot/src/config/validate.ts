@@ -10,6 +10,9 @@ import type {
 
 const LOG_LEVELS = ["debug", "info", "warn", "error", "silent"] as const;
 
+/** Object keys that would pollute a prototype rather than create an own property. */
+const UNSAFE_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 /**
  * Thrown when a config fails validation. Carries every issue found (validation
  * collects all problems rather than failing on the first), each prefixed with
@@ -253,6 +256,10 @@ function validateModules(
   const rec = v.optRecord(value, path);
   if (!rec) return out;
   for (const [name, entryRaw] of Object.entries(rec)) {
+    if (UNSAFE_KEYS.has(name)) {
+      v.fail(`${path}.${name}`, "is a reserved key and not allowed");
+      continue;
+    }
     const entry = v.optRecord(entryRaw, `${path}.${name}`);
     if (!entry) continue;
     const enabled = v.optBoolean(entry.enabled, `${path}.${name}.enabled`) ?? true;

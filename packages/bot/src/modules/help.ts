@@ -1,3 +1,4 @@
+import { checkPermission } from "../command/permissions.ts";
 import { defineModule, type Module } from "../module/types.ts";
 import type { Command } from "../command/types.ts";
 
@@ -38,7 +39,9 @@ export function helpModule(): Module {
         usage: "[command]",
         aliases: ["commands"],
         handler: (c) => {
-          const commands = c.bot.listCommands();
+          // Only show commands the requester could actually run, so `help` doesn't leak
+          // the owner-only admin surface (or confirm an owner command exists) to everyone.
+          const commands = c.bot.listCommands().filter((cmd) => checkPermission(cmd.permission ?? "anyone", c));
           const query = c.args[0]?.toLowerCase();
           if (query) {
             const match = commands.find(

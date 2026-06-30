@@ -10,6 +10,16 @@ import type { CaseMapper, PrivmsgEvent } from "@mojo-jojo/irc-client";
 
 const ACCOUNT_PREFIX = "account:";
 const MASK_PREFIX = "mask:";
+const NICK_PREFIX = "nick:";
+
+/**
+ * Is `pattern` a SECURE owner matcher? `account:` (services-authenticated) and
+ * `mask:` (hostmask) are secure; bare-nick and `nick:` are NOT — an attacker who
+ * takes the nick while the owner is offline would match.
+ */
+export function isSecureMatcher(pattern: string): boolean {
+  return pattern.startsWith(ACCOUNT_PREFIX) || pattern.startsWith(MASK_PREFIX);
+}
 
 /**
  * Normalize an account value to a real account or `null`. The message-scoped
@@ -32,19 +42,34 @@ export function resolveAccount(event: PrivmsgEvent): string | null {
   return normalizeAccount(event.user.account);
 }
 
-// Compiled-glob cache (masks come from fixed config lists, so this stays small).
-const GLOB_CACHE = new Map<string, RegExp>();
-const GLOB_CACHE_MAX = 256;
-
-/** Build (memoized) a case-insensitive RegExp from an IRC glob (`*` = any run, `?` = one char). */
-function globToRegExp(glob: string): RegExp {
-  const cached = GLOB_CACHE.get(glob);
-  if (cached) return cached;
-  const escaped = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  const pattern = escaped.replace(/\*/g, ".*").replace(/\?/g, ".");
-  const compiled = new RegExp(`^${pattern}$`, "i");
-  if (GLOB_CACHE.size < GLOB_CACHE_MAX) GLOB_CACHE.set(glob, compiled);
-  return compiled;
+/**
+ * Linear IRC-glob match (`*` = any run, `?` = one char). Iterative greedy match with
+ * single-star backtracking — O(pattern·value), so NO catastrophic regex backtracking
+ * (ReDoS) even for a pathological `*a*a*a…` mask. Comparison is exact; callers fold
+ * case (and casemapping) beforehand.
+ */
+function globMatch(pattern: string, value: string): boolean {
+  let p = 0;
+  let v = 0;
+  let star = -1;
+  let mark = 0;
+  while (v < value.length) {
+    const pc = pattern[p];
+    if (p < pattern.length && (pc === "?" || pc === value[v])) {
+      p++;
+      v++;
+    } else if (pc === "*") {
+      star = p++;
+      mark = v;
+    } else if (star >= 0) {
+      p = star + 1;
+      v = ++mark;
+    } else {
+      return false;
+    }
+  }
+  while (pattern[p] === "*") p++;
+  return p === pattern.length;
 }
 
 function asciiEqualsIgnoreCase(a: string, b: string): boolean {
@@ -55,16 +80,16 @@ function matchesMask(event: PrivmsgEvent, mask: string, caseMapper: CaseMapper |
   const { nick, username, host } = event.user;
   // Fail closed: an unknown user/host must never match a wildcard.
   if (username === null || host === null) return false;
-  const fold = (s: string): string => (caseMapper ? caseMapper.normalize(s) : s.toLowerCase());
+  const foldNick = (s: string): string => (caseMapper ? caseMapper.normalize(s) : s.toLowerCase());
   const bang = mask.indexOf("!");
   if (bang < 0) {
-    // No nick separator: ASCII-glob the whole hostmask.
-    return globToRegExp(mask).test(`${nick}!${username}@${host}`);
+    // No nick separator: ASCII-fold and glob the whole hostmask.
+    return globMatch(mask.toLowerCase(), `${nick}!${username}@${host}`.toLowerCase());
   }
   // Fold the NICK part under the server CASEMAPPING (so `a{b}` matches `a[b]` on
   // rfc1459); the user@host part stays ASCII case-insensitive.
-  const nickOk = globToRegExp(fold(mask.slice(0, bang))).test(fold(nick));
-  const hostOk = globToRegExp(mask.slice(bang + 1)).test(`${username}@${host}`);
+  const nickOk = globMatch(foldNick(mask.slice(0, bang)), foldNick(nick));
+  const hostOk = globMatch(mask.slice(bang + 1).toLowerCase(), `${username}@${host}`.toLowerCase());
   return nickOk && hostOk;
 }
 
@@ -81,15 +106,18 @@ export function matchesIdentity(
   if (pattern.startsWith(ACCOUNT_PREFIX)) {
     const account = pattern.slice(ACCOUNT_PREFIX.length);
     if (account.length === 0) return false;
-    const actual = resolveAccount(event);
-    return actual !== null && asciiEqualsIgnoreCase(actual, account);
+    // Use the MESSAGE-scoped account-tag ONLY — never the cached entity account — so a
+    // stale cache can't authorize a logged-out sender. (On an account-tag network every
+    // logged-in message is tagged; without the cap, account: simply cannot be verified.)
+    const tag = normalizeAccount(event.account);
+    return tag !== null && asciiEqualsIgnoreCase(tag, account);
   }
   if (pattern.startsWith(MASK_PREFIX)) {
     return matchesMask(event, pattern.slice(MASK_PREFIX.length), caseMapper);
   }
-  return caseMapper
-    ? caseMapper.equals(event.user.nick, pattern)
-    : asciiEqualsIgnoreCase(event.user.nick, pattern);
+  // `nick:<nick>` is the explicit (insecure) nick form; a bare string is the same.
+  const wanted = pattern.startsWith(NICK_PREFIX) ? pattern.slice(NICK_PREFIX.length) : pattern;
+  return caseMapper ? caseMapper.equals(event.user.nick, wanted) : asciiEqualsIgnoreCase(event.user.nick, wanted);
 }
 
 /**

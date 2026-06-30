@@ -15,6 +15,7 @@ import { Cooldowns } from "./abuse/cooldown.ts";
 import { IgnoreList } from "./abuse/ignore.ts";
 import { CommandRouter } from "./command/CommandRouter.ts";
 import { matchOwner } from "./command/permissions.ts";
+import { isSecureMatcher } from "./identity/match.ts";
 import { ModuleRegistry } from "./module/registry.ts";
 import { loadExternalModule } from "./module/loadExternal.ts";
 import { ModuleHost, type ModuleHostDeps } from "./module/ModuleHost.ts";
@@ -152,6 +153,14 @@ export class Bot {
 
   async #doStart(): Promise<void> {
     try {
+      for (const owner of this.#config.bot.owners) {
+        if (!isSecureMatcher(owner)) {
+          this.#log.warn(
+            `owner "${owner}" uses insecure nick matching — an attacker who takes this nick ` +
+              `while the owner is offline gains owner access; prefer account: or mask:`,
+          );
+        }
+      }
       this.#lifecycleSub.add(this.#client.lifecycle$.subscribe((event) => this.#logLifecycle(event)));
       this.#router.start();
       await this.#loadModules();

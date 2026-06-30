@@ -334,6 +334,28 @@ describe("Bot", () => {
     }
   });
 
+  test("warns at startup about insecure (nick) owners only", async () => {
+    const warnings: string[] = [];
+    const logger = new ConsoleLogger({
+      level: "warn",
+      sink: { debug() {}, info() {}, warn: (m) => void warnings.push(String(m)), error() {} },
+    });
+    const { factory, mocks } = freshMockTransports();
+    const bot = new Bot(makeConfig({ bot: { owners: ["nick:bob", "account:safe"] } }), {
+      transport: factory,
+      registerSignalHandlers: false,
+      logger,
+      quitFlushMs: 0,
+    });
+    const started = bot.start();
+    await waitFor(() => mocks.length >= 1 && mocks[0]!.written.some((l) => l.startsWith("USER")));
+    mocks[0]!.receiveLine(":irc 001 mojo :hi");
+    await started;
+    expect(warnings.some((w) => w.includes("nick:bob") && w.includes("insecure"))).toBe(true);
+    expect(warnings.some((w) => w.includes("account:safe"))).toBe(false);
+    await bot.stop();
+  });
+
   test("stop() before start() is a safe no-op", async () => {
     const { factory } = freshMockTransports();
     const events: BotEvent[] = [];

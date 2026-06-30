@@ -1,14 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { CaseMapper } from "@mojo-jojo/irc-client";
-import { matchesAny, matchesIdentity, senderKey } from "./match.ts";
+import { isSecureMatcher, matchesAny, matchesIdentity, senderKey } from "./match.ts";
 import { fakePrivmsg } from "../testing/fakeEvents.ts";
 
 const cm = new CaseMapper("rfc1459");
 
 describe("matchesIdentity", () => {
-  test("account: matches the message tag (preferred) or the entity account", () => {
+  test("account: matches the message tag ONLY — never a cached/stale entity account", () => {
+    // Present, matching tag → match.
     expect(matchesIdentity(fakePrivmsg({ messageAccount: "kester" }), "account:kester", cm)).toBe(true);
-    expect(matchesIdentity(fakePrivmsg({ account: "kester" }), "account:kester", cm)).toBe(true);
+    // No message tag → NO match, even if the cached entity account would match (security:
+    // a stale cache must never authorize a logged-out sender).
+    expect(matchesIdentity(fakePrivmsg({ account: "kester" }), "account:kester", cm)).toBe(false);
     expect(matchesIdentity(fakePrivmsg({}), "account:kester", cm)).toBe(false);
     expect(matchesIdentity(fakePrivmsg({ messageAccount: "other" }), "account:kester", cm)).toBe(false);
   });
@@ -21,11 +24,16 @@ describe("matchesIdentity", () => {
     expect(matchesIdentity(fakePrivmsg({ messageAccount: "bob" }), "account:Bob", cm)).toBe(true);
   });
 
-  test("account: a present '*' tag is authoritative (no fallback to a stale cached account)", () => {
-    // Message says logged-out (`*`) but the entity cache still holds 'boss' — must NOT match.
+  test("account: a logged-out '*' tag never matches, regardless of the cache", () => {
     expect(matchesIdentity(fakePrivmsg({ messageAccount: "*", account: "boss" }), "account:boss", cm)).toBe(false);
-    // No tag at all → fall back to the cached account.
-    expect(matchesIdentity(fakePrivmsg({ account: "boss" }), "account:boss", cm)).toBe(true);
+  });
+
+  test("nick: is the explicit nick form; isSecureMatcher flags insecure owners", () => {
+    expect(matchesIdentity(fakePrivmsg({ nick: "Bob" }), "nick:bob", cm)).toBe(true);
+    expect(isSecureMatcher("account:x")).toBe(true);
+    expect(isSecureMatcher("mask:*!*@*")).toBe(true);
+    expect(isSecureMatcher("nick:bob")).toBe(false);
+    expect(isSecureMatcher("bob")).toBe(false);
   });
 
   test("mask: the nick part folds under the server casemapping", () => {
@@ -34,12 +42,9 @@ describe("matchesIdentity", () => {
     expect(matchesIdentity(e, "mask:a{b}!*@*", new CaseMapper("ascii"))).toBe(false); // ascii does not
   });
 
-  test("account: prefers the message tag and ignores a divergent cached entity account", () => {
-    // Message tag 'alice' present -> only it counts; the stale entity account 'bob' is ignored.
+  test("account: a divergent message tag wins over a stale cache", () => {
     expect(matchesIdentity(fakePrivmsg({ messageAccount: "alice", account: "bob" }), "account:bob", cm)).toBe(false);
     expect(matchesIdentity(fakePrivmsg({ messageAccount: "alice", account: "bob" }), "account:alice", cm)).toBe(true);
-    // No message tag -> fall back to the entity account.
-    expect(matchesIdentity(fakePrivmsg({ account: "bob" }), "account:bob", cm)).toBe(true);
   });
 
   test("mask: glob-matches nick!user@host, case-insensitively", () => {

@@ -1,5 +1,6 @@
-import { describe, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { bootBot } from "../testing/botHarness.ts";
+import { adminModule } from "./admin.ts";
 import { helpModule } from "./help.ts";
 import { pingModule } from "./ping.ts";
 
@@ -22,6 +23,24 @@ describe("helpModule", () => {
     h.send(":mojo!u@h JOIN #chan");
     h.send(":alice!a@h PRIVMSG #chan :!help nope");
     await h.awaitWritten((l) => l.includes("No such command: nope"));
+    await h.stop();
+  });
+
+  test("hides owner-only commands from a non-owner (and won't confirm them)", async () => {
+    const h = await bootBot({
+      modules: { help: {}, admin: {} },
+      bot: { owners: ["mask:boss!*@*"] },
+      factories: { help: helpModule, admin: adminModule },
+    });
+    h.send(":mojo!u@h JOIN #chan");
+    h.send(":rando!r@h PRIVMSG #chan :!help");
+    await h.awaitWritten((l) => l.includes("Commands:"));
+    const listing = h.written().find((l) => l.includes("Commands:"))!;
+    expect(listing.includes("help")).toBe(true);
+    expect(listing.includes("join")).toBe(false); // owner-only command hidden
+
+    h.send(":rando!r@h PRIVMSG #chan :!help join");
+    await h.awaitWritten((l) => l.includes("No such command: join"));
     await h.stop();
   });
 

@@ -20,7 +20,8 @@ export function autojoinModule(): Module<AutojoinConfig> {
       const v = new Validator();
       const channels = v.optStringArray(raw.channels, "modules.autojoin.channels") ?? [];
       const delayMs = v.optNonNegativeNumber(raw.delayMs, "modules.autojoin.delayMs") ?? 0;
-      const keys: Record<string, string> = {};
+      // A null-prototype map so a hostile channel key (`__proto__`) can't pollute.
+      const keys: Record<string, string> = Object.create(null) as Record<string, string>;
       const keysRaw = v.optRecord(raw.keys, "modules.autojoin.keys");
       if (keysRaw) {
         for (const [channel, key] of Object.entries(keysRaw)) {

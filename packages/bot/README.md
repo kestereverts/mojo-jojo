@@ -63,3 +63,18 @@ specifier). A relative path is resolved against the config file's own directory 
 current working directory or the importing module — and the loader passes each through
 `resolveExternalSpecifier(spec, configDir)` (converting paths to a `file://` URL) before
 `import()`. They must not be imported directly.
+
+## Security / threat model
+
+- **The IRC server is a trusted identity authority.** All sender identity (account-tags,
+  hostmasks, channel modes) comes from the server; a malicious or compromised server can
+  impersonate anyone. This is inherent to IRC — owner/permission gating defends against
+  malicious *users*, not a hostile server.
+- **Owners:** prefer `account:` (verified per-message via `account-tag`; a logged-out sender
+  never matches) or `mask:`. Bare-nick / `nick:` owners are spoofable by nick takeover and the
+  bot warns about them at startup.
+- **Outbound safety:** every relay (`say`/`notice`/`action`/`raw`/CTCP) goes through the
+  client's strict `send()`, which throws on CR/LF/NUL injection or over-512-byte lines; the bot
+  catches that and drops the send, so untrusted text can never inject a wire command.
+- **External modules** run with full process privilege — the config file is a trust boundary
+  equal to the bot's own code. Don't load config from an untrusted source.

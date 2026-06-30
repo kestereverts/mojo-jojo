@@ -36,8 +36,12 @@ maxDelayMs = 30000
 
 [bot]
 prefix = "!"
-owners = ["account:you"] # account:<name> (best), mask:<nick!user@host>, or a bare nick
-ignore = []              # same matcher forms; matched senders are dropped before dispatch
+# Owner matchers. Prefer `account:<name>` (services-authenticated) or `mask:<nick!user@host>`.
+# A bare nick / `nick:<nick>` is INSECURE — an attacker who takes the nick while the owner is
+# offline gains owner access (the bot logs a warning for these). Identity ultimately comes from
+# the IRC server, which is trusted: a malicious/compromised server can impersonate anyone.
+owners = ["account:you"]
+ignore = [] # same matcher forms; matched senders are dropped before dispatch
 allowPrefixlessInPm = true
 failOnModuleError = false # true = a module that fails to load aborts startup
 logLevel = "info"         # debug | info | warn | error | silent
