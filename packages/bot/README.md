@@ -9,8 +9,10 @@ plumbing) and wire up behaviour — chat commands or raw event subscriptions. Ev
 RxJS-internally; the framework exposes its own events as both an `events$` Observable and a
 thin `on()/once()/off()` façade.
 
-> Status: under construction. M1 (package scaffold + config layer) is the first milestone;
-> see the build plan for the full milestone breakdown.
+A `Bot` drives exactly **one network** (one `IrcClient`). For multiple networks, run
+multiple `Bot`s — optionally sharing a `ModuleRegistry` — rather than multiplexing one.
+
+> Status: under construction; see the build plan for the full milestone breakdown.
 
 ## Layout
 

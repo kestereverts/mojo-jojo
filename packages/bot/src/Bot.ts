@@ -1,4 +1,4 @@
-import { Subscription, type Observable } from "rxjs";
+import { Subscription, catchError, filter, firstValueFrom, of, take, timeout, type Observable } from "rxjs";
 import { IrcClient } from "@mojo-jojo/irc-client";
 import type { LifecycleEvent, TransportFactory } from "@mojo-jojo/irc-client";
 import type { BotConfig } from "./config/schema.ts";
@@ -28,7 +28,12 @@ export interface BotDeps {
   readonly registry?: ModuleRegistry;
   /** Install SIGINT/SIGTERM → stop() (default true; pass false in tests). */
   readonly registerSignalHandlers?: boolean;
+  /** Post-QUIT flush window in ms, letting the socket flush before stop() resolves (default 250; 0 in tests). */
+  readonly quitFlushMs?: number;
 }
+
+const DEFAULT_QUIT_FLUSH_MS = 250;
+const QUIT_WAIT_MS = 2000;
 
 function asError(value: unknown): Error {
   return value instanceof Error ? value : new Error(String(value));
@@ -39,8 +44,11 @@ function asError(value: unknown): Error {
  *
  * Modules are set up once (before connect) and persist across reconnects, since the
  * client's event streams are reconnect-stable — per-connection work must hang off the
- * `registered` lifecycle event. M2 ships load/connect/teardown + the {@link BotEvent}
- * surface; the command framework and graceful-shutdown polish land in M3/M4.
+ * `registered` lifecycle event.
+ *
+ * Scope: a Bot drives exactly ONE network (one {@link IrcClient}). For multiple
+ * networks, run multiple Bots (optionally sharing a {@link ModuleRegistry}); do not
+ * multiplex one Bot across connections.
  */
 export class Bot {
   readonly #config: BotConfig;
@@ -55,9 +63,11 @@ export class Bot {
   readonly #lifecycleSub = new Subscription();
   readonly #botApi: BotApi;
   readonly #registerSignals: boolean;
+  readonly #quitFlushMs: number;
   #removeSignals: (() => void) | null = null;
   #starting: Promise<void> | null = null;
   #stopping: Promise<void> | null = null;
+  #torndown = false;
 
   constructor(config: BotConfig, deps: BotDeps = {}) {
     this.#config = config;
@@ -69,6 +79,7 @@ export class Bot {
     this.#registry = deps.registry ?? new ModuleRegistry(builtinModules);
     this.#ignore = new IgnoreList(config.bot.ignore);
     this.#registerSignals = deps.registerSignalHandlers ?? true;
+    this.#quitFlushMs = deps.quitFlushMs ?? DEFAULT_QUIT_FLUSH_MS;
     this.#botApi = {
       prefix: config.bot.prefix,
       owners: config.bot.owners,
@@ -125,12 +136,18 @@ export class Bot {
   }
 
   async #doStart(): Promise<void> {
-    this.#lifecycleSub.add(this.#client.lifecycle$.subscribe((event) => this.#logLifecycle(event)));
-    this.#router.start();
-    await this.#loadModules();
-    if (this.#registerSignals) this.#installSignals();
-    await this.#client.connect();
-    this.#events.emit({ type: "started" });
+    try {
+      this.#lifecycleSub.add(this.#client.lifecycle$.subscribe((event) => this.#logLifecycle(event)));
+      this.#router.start();
+      await this.#loadModules();
+      if (this.#registerSignals) this.#installSignals();
+      await this.#client.connect();
+      this.#events.emit({ type: "started" });
+    } catch (error) {
+      // Self-clean a failed startup so the caller doesn't have to.
+      await this.#teardown("startup failed");
+      throw error;
+    }
   }
 
   async #loadModules(): Promise<void> {
@@ -212,13 +229,20 @@ export class Bot {
 
   async #doStop(reason: string): Promise<void> {
     if (this.#starting) {
-      // Don't let a SIGINT mid-startup leave a half-initialized host set.
+      // Don't let a stop() mid-startup race a half-initialized host set.
       try {
         await this.#starting;
       } catch {
-        // start failed; continue with teardown regardless.
+        // start failed (and self-cleaned); the teardown below is then a no-op.
       }
     }
+    await this.#teardown(reason);
+  }
+
+  /** Dispose everything exactly once. Shared by stop() and start()'s self-clean path. */
+  async #teardown(reason: string): Promise<void> {
+    if (this.#torndown) return;
+    this.#torndown = true;
     this.#removeSignals?.();
     this.#removeSignals = null;
     for (let i = this.#hosts.length - 1; i >= 0; i--) {
@@ -229,10 +253,51 @@ export class Bot {
       }
     }
     this.#router.dispose();
-    this.#lifecycleSub.unsubscribe();
-    this.#client.quit(reason);
-    this.#events.emit({ type: "stopped", reason });
-    this.#events.complete();
+    // The QUIT path could fault (a transport write throwing); the bot-side cleanup
+    // below must still run so streams complete and `stopped` fires exactly once.
+    try {
+      await this.#gracefulQuit(reason);
+    } finally {
+      this.#lifecycleSub.unsubscribe();
+      this.#events.emit({ type: "stopped", reason });
+      this.#events.complete();
+    }
+  }
+
+  /**
+   * Send QUIT and let it reach the wire before resolving. `IrcClient.quit` sends
+   * QUIT via `sendImmediate` then closes the socket with `socket.end()` — a graceful
+   * flush-then-FIN. We observe the local disconnect it emits (capped) and then yield
+   * a brief flush window, so a caller that exits the process right after stop() does
+   * not drop the QUIT (which would leave the server to ping-timeout us). Skipped when
+   * the client was never live (no socket to flush).
+   */
+  async #gracefulQuit(reason: string): Promise<void> {
+    const wasLive = this.#client.state === "registered" || this.#client.state === "connecting";
+    // Subscribe before quit() so the synchronous local disconnect it emits is caught.
+    // `defaultValue` guards an empty completion; `catchError` guards the timeout.
+    const disconnected = wasLive
+      ? firstValueFrom(
+          this.#client.lifecycle$.pipe(
+            filter((event) => event.type === "disconnected" && event.local),
+            take(1),
+            timeout({ first: QUIT_WAIT_MS }),
+            catchError(() => of(null)),
+          ),
+          { defaultValue: null },
+        )
+      : null;
+    try {
+      this.#client.quit(reason);
+    } catch (error) {
+      this.#log.error("QUIT send failed during teardown", error);
+      return;
+    }
+    if (!disconnected) return;
+    await disconnected;
+    if (this.#quitFlushMs > 0) {
+      await new Promise<void>((resolve) => setTimeout(resolve, this.#quitFlushMs));
+    }
   }
 
   #installSignals(): void {

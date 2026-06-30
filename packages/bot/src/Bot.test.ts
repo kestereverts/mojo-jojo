@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { takeUntil } from "rxjs";
+import { MockTransport, type TransportFactory } from "@mojo-jojo/irc-client";
 import { Bot } from "./Bot.ts";
 import { ConsoleLogger } from "./logging/logger.ts";
 import { validateConfig } from "./config/validate.ts";
@@ -45,7 +46,13 @@ async function startBot(
 ): Promise<{ bot: Bot; mocks: ReturnType<typeof freshMockTransports>["mocks"]; events: BotEvent[] }> {
   const { factory, mocks } = freshMockTransports();
   const events: BotEvent[] = [];
-  const bot = new Bot(config, { transport: factory, registry, registerSignalHandlers: false, logger: silent() });
+  const bot = new Bot(config, {
+    transport: factory,
+    registry,
+    registerSignalHandlers: false,
+    logger: silent(),
+    quitFlushMs: 0,
+  });
   bot.events$.subscribe((e) => events.push(e));
   const started = bot.start();
   await waitFor(() => mocks.length >= 1 && mocks[0]!.written.some((l) => l.startsWith("USER")));
@@ -73,6 +80,7 @@ describe("Bot", () => {
       registry: new ModuleRegistry({ probe: () => probe }),
       registerSignalHandlers: false,
       logger: silent(),
+      quitFlushMs: 0,
     });
 
     const started = bot.start();
@@ -157,17 +165,22 @@ describe("Bot", () => {
 
   test("failOnModuleError aborts start()", async () => {
     const { factory } = freshMockTransports();
+    const events: BotEvent[] = [];
     const bot = new Bot(makeConfig({ modules: { ghost: {} }, bot: { failOnModuleError: true } }), {
       transport: factory,
       registerSignalHandlers: false,
       logger: silent(),
+      quitFlushMs: 0,
     });
+    bot.events$.subscribe((e) => events.push(e));
     let caught: Error | undefined;
     await bot.start().catch((e: unknown) => {
       caught = e as Error;
     });
     expect(caught?.message).toMatch(/unknown module "ghost"/);
-    await bot.stop();
+    // start() self-cleans on failure: stopped is emitted without an explicit stop().
+    expect(events.some((e) => e.type === "stopped")).toBe(true);
+    await bot.stop(); // idempotent no-op after self-teardown
   });
 
   test("auto-loads an external module from externalModules", async () => {
@@ -207,6 +220,74 @@ describe("Bot", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(mocks[0]!.written.some((l) => l.startsWith("PRIVMSG #chan") && l.includes("pong"))).toBe(false);
     await bot.stop();
+  });
+
+  test("an external module's command works end-to-end", async () => {
+    const config = makeConfig({ externalModules: ["./module/fixtures/commandModule.ts"] }, import.meta.dir);
+    const { bot, mocks } = await startBot(config);
+    mocks[0]!.receiveLine(":mojo!u@h JOIN #chan");
+    mocks[0]!.receiveLine(":alice!a@h PRIVMSG #chan :!ext");
+    await waitFor(() => mocks[0]!.written.some((l) => l.startsWith("PRIVMSG #chan") && l.includes("ext-pong")));
+    await bot.stop();
+  });
+
+  test("stop() tears down the router so later messages are not dispatched", async () => {
+    const ping = defineModule({
+      name: "ping",
+      setup(ctx) {
+        ctx.command({ name: "ping", description: "pong", handler: (c) => void c.reply("pong") });
+      },
+    });
+    const { bot, mocks } = await startBot(makeConfig({ modules: { ping: {} } }), new ModuleRegistry({ ping: () => ping }));
+    mocks[0]!.receiveLine(":mojo!u@h JOIN #chan");
+    await bot.stop();
+    const writtenAfterStop = mocks[0]!.written.length;
+    mocks[0]!.receiveLine(":alice!a@h PRIVMSG #chan :!ping"); // after teardown
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mocks[0]!.written.length).toBe(writtenAfterStop); // nothing new written
+  });
+
+  test("stop() is idempotent and emits stopped once", async () => {
+    const { bot, events } = await startBot(makeConfig());
+    await Promise.all([bot.stop(), bot.stop()]);
+    await bot.stop();
+    expect(events.filter((e) => e.type === "stopped")).toHaveLength(1);
+  });
+
+  test("stop() completes bot teardown even when the QUIT write throws", async () => {
+    class ThrowOnQuit extends MockTransport {
+      override write(data: Uint8Array | string): void {
+        const line = typeof data === "string" ? data : new TextDecoder().decode(data);
+        if (line.startsWith("QUIT")) throw new Error("write failed");
+        super.write(data);
+      }
+    }
+    const mocks: ThrowOnQuit[] = [];
+    const factory: TransportFactory = () => {
+      const mock = new ThrowOnQuit();
+      mocks.push(mock);
+      return mock;
+    };
+    const events: BotEvent[] = [];
+    const bot = new Bot(makeConfig(), { transport: factory, registerSignalHandlers: false, logger: silent(), quitFlushMs: 0 });
+    bot.events$.subscribe((e) => events.push(e));
+    const started = bot.start();
+    await waitFor(() => mocks.length >= 1 && mocks[0]!.written.some((l) => l.startsWith("USER")));
+    mocks[0]!.receiveLine(":irc 001 mojo :hi");
+    await started;
+    await bot.stop(); // QUIT write throws -> caught -> bot-side cleanup still runs
+    expect(events.some((e) => e.type === "stopped")).toBe(true);
+    expect(bot.client.state).toBe("closed"); // ...and the client genuinely shut down
+  });
+
+  test("stop() before start() is a safe no-op", async () => {
+    const { factory } = freshMockTransports();
+    const events: BotEvent[] = [];
+    const bot = new Bot(makeConfig(), { transport: factory, registerSignalHandlers: false, logger: silent(), quitFlushMs: 0 });
+    bot.events$.subscribe((e) => events.push(e));
+    await bot.stop(); // never started
+    expect(events.some((e) => e.type === "stopped")).toBe(true);
+    expect(events.some((e) => e.type === "started")).toBe(false);
   });
 
   test("stop() disposes modules, quits, and emits stopped", async () => {
