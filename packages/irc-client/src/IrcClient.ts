@@ -403,8 +403,14 @@ export class IrcClient {
    * reconnection. Idempotent: safe to call repeatedly; the client is single-use.
    */
   quit(reason = "Leaving"): void {
-    this.#queue?.sendImmediate(quitCommand(reason));
-    this.#shutdown();
+    // Shut down even if the QUIT write throws (e.g. a faulted transport), so the
+    // client never reports a live state with the connection actually torn down.
+    // The write error still propagates after shutdown completes.
+    try {
+      this.#queue?.sendImmediate(quitCommand(reason));
+    } finally {
+      this.#shutdown();
+    }
   }
 
   /**

@@ -128,6 +128,37 @@ describe("IrcClient", () => {
     expect(events.some((e) => e.type === "disconnected" && e.local === true)).toBe(true);
   });
 
+  test("quit() still shuts down when the QUIT write throws", async () => {
+    class ThrowOnQuit extends MockTransport {
+      override write(data: Uint8Array | string): void {
+        const line = typeof data === "string" ? data : new TextDecoder().decode(data);
+        if (line.startsWith("QUIT")) throw new Error("write failed");
+        super.write(data);
+      }
+    }
+    const mock = new ThrowOnQuit();
+    const client = new IrcClient({
+      host: "irc.test",
+      nick: "mojo",
+      tls: false,
+      transport: () => mock,
+      caps: [],
+      floodDelayMs: 0,
+    });
+    const events: LifecycleEvent[] = [];
+    let completed = false;
+    client.lifecycle$.subscribe({ next: (e) => events.push(e), complete: () => (completed = true) });
+    const connected = client.connect();
+    await waitFor(() => mock.written.some((l) => l.startsWith("USER")));
+    mock.receiveLine(":irc 001 mojo :Welcome");
+    await connected;
+
+    expect(() => client.quit("bye")).toThrow("write failed"); // the write error still propagates
+    expect(client.state).toBe("closed"); // ...but shutdown ran anyway
+    expect(completed).toBe(true);
+    expect(events.some((e) => e.type === "disconnected" && e.local === true)).toBe(true);
+  });
+
   test("reconnects with backoff after an abnormal drop", async () => {
     const mocks: MockTransport[] = [];
     const client = new IrcClient({
