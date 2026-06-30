@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { CaseMapper } from "@mojo-jojo/irc-client";
-import { matchesAny, matchesIdentity } from "./match.ts";
+import { matchesAny, matchesIdentity, senderKey } from "./match.ts";
 import { fakePrivmsg } from "../testing/fakeEvents.ts";
 
 const cm = new CaseMapper("rfc1459");
@@ -52,6 +52,23 @@ describe("matchesIdentity", () => {
   test("bare nick falls back to ASCII comparison when caseMapper is null", () => {
     expect(matchesIdentity(fakePrivmsg({ nick: "Alice" }), "ALICE", null)).toBe(true);
     expect(matchesIdentity(fakePrivmsg({ nick: "a[b]" }), "a{b}", null)).toBe(false); // ASCII never folds []
+  });
+});
+
+describe("senderKey", () => {
+  test("prefers the account when authenticated", () => {
+    expect(senderKey(fakePrivmsg({ messageAccount: "Boss", username: "u", host: "h" }), cm)).toBe("account:boss");
+  });
+
+  test("falls back to user@host — stable across nick changes and host case", () => {
+    const a = senderKey(fakePrivmsg({ nick: "alice", username: "id", host: "Host.NET" }), cm);
+    const b = senderKey(fakePrivmsg({ nick: "alice2", username: "id", host: "host.net" }), cm);
+    expect(a).toBe("host:id@host.net");
+    expect(a).toBe(b);
+  });
+
+  test("uses the casemapped nick when user/host are unknown", () => {
+    expect(senderKey(fakePrivmsg({ nick: "Alice" }), cm)).toBe("nick:alice");
   });
 });
 

@@ -5,7 +5,7 @@ import type { IgnoreList } from "../abuse/ignore.ts";
 import type { BotEventHub } from "../events/botEvents.ts";
 import type { Logger } from "../logging/logger.ts";
 import type { BotApi, Disposer, MaybePromise } from "../module/types.ts";
-import { normalizeAccount } from "../identity/match.ts";
+import { senderKey } from "../identity/match.ts";
 import { checkPermission } from "./permissions.ts";
 import { parseCommandLine } from "./parse.ts";
 import { replyTarget, safeNotice, safeSay } from "./reply.ts";
@@ -236,14 +236,7 @@ export class CommandRouter {
 
   /** Stable per-user key for cooldowns: account, else hostmask, else casemapped nick. */
   #userKey(event: PrivmsgEvent): string {
-    // Normalize `*`/`""` to absent so logged-out senders don't share a key; lowercase
-    // so case-fluctuating server reports can't split cooldown slots.
-    const account = normalizeAccount(event.account) ?? normalizeAccount(event.user.account);
-    if (account) return `account:${account.toLowerCase()}`;
-    const { nick, username, host } = event.user;
-    if (username !== null && host !== null) return `mask:${nick}!${username}@${host}`;
-    const caseMapper = this.#deps.client.server?.caseMapper ?? null;
-    return `nick:${caseMapper ? caseMapper.normalize(nick) : nick.toLowerCase()}`;
+    return senderKey(event, this.#deps.client.server?.caseMapper ?? null);
   }
 
   /** Await a handler with a timeout that frees the concurrency slot (cannot abort the work). */

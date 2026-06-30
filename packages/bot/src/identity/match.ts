@@ -73,6 +73,23 @@ export function matchesIdentity(
     : asciiEqualsIgnoreCase(event.user.nick, pattern);
 }
 
+/**
+ * A stable, case-folded identity key for a sender (for cooldowns/rate-limits):
+ * the services `account:` when authenticated, else the lowercased `user@host`
+ * (stable across nick changes — the host is server-assigned), else the casemapped
+ * nick as a last resort. Note `user@host` can be shared (NAT/bouncer), so distinct
+ * users there share a key — an acceptable trade for rate-limiting.
+ */
+export function senderKey(event: PrivmsgEvent, caseMapper: CaseMapper | null): string {
+  const account = normalizeAccount(event.account) ?? normalizeAccount(event.user.account);
+  if (account) return `account:${account.toLowerCase()}`;
+  const { nick, username, host } = event.user;
+  if (username !== null && host !== null) {
+    return `host:${username.toLowerCase()}@${host.toLowerCase()}`;
+  }
+  return `nick:${caseMapper ? caseMapper.normalize(nick) : nick.toLowerCase()}`;
+}
+
 /** True when `event`'s sender matches any pattern in `patterns`. */
 export function matchesAny(
   event: PrivmsgEvent,
