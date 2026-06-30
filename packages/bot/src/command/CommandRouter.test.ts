@@ -128,6 +128,26 @@ describe("CommandRouter", () => {
     expect(h.denials()).toEqual(["ignored"]);
   });
 
+  test("exposes cooldown and isIgnored on the command context", async () => {
+    const h = harness({ ignore: new IgnoreList(["mask:*!*@bad.host"]) });
+    const seen: { first?: boolean; second?: boolean; ignored?: boolean } = {};
+    h.router.add(
+      {
+        name: "cd",
+        description: "x",
+        handler: (ctx) => {
+          seen.first = ctx.cooldown("k", 1000);
+          seen.second = ctx.cooldown("k", 1000);
+          seen.ignored = ctx.isIgnored(ctx.event);
+        },
+      },
+      "test",
+    );
+    h.emit({ text: "!cd", username: "u", host: "ok.host" });
+    await tick();
+    expect(seen).toEqual({ first: true, second: false, ignored: false });
+  });
+
   test("isolates a throwing handler as commandError", async () => {
     const h = harness();
     h.router.add({ name: "boom", description: "x", handler: () => { throw new Error("kaboom"); } }, "test");

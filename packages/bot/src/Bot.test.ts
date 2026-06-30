@@ -280,6 +280,25 @@ describe("Bot", () => {
     expect(bot.client.state).toBe("closed"); // ...and the client genuinely shut down
   });
 
+  test("emits moduleError{dispose} when a disposer throws on stop", async () => {
+    const bad = defineModule({
+      name: "baddispose",
+      setup() {
+        return () => {
+          throw new Error("dispose boom");
+        };
+      },
+    });
+    const { bot, events } = await startBot(
+      makeConfig({ modules: { baddispose: {} } }),
+      new ModuleRegistry({ baddispose: () => bad }),
+    );
+    await bot.stop();
+    expect(
+      events.some((e) => e.type === "moduleError" && e.name === "baddispose" && e.phase === "dispose"),
+    ).toBe(true);
+  });
+
   test("stop() before start() is a safe no-op", async () => {
     const { factory } = freshMockTransports();
     const events: BotEvent[] = [];

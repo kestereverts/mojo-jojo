@@ -19,6 +19,8 @@ export interface ModuleHostDeps {
   readonly caseMapper: () => CaseMapper | null;
   /** Register a command on behalf of this module; returns an unregister. */
   readonly registerCommand: (command: Command, module: string) => Disposer;
+  /** Reported (in addition to logging) when a disposer throws during teardown. */
+  readonly onDisposeError?: (error: unknown) => void;
   /** Storage for this module; defaults to a fresh in-memory store. */
   readonly storage?: ModuleStorage;
 }
@@ -129,6 +131,7 @@ export class ModuleHost<C = unknown> {
       await disposer();
     } catch (error) {
       this.#deps.log.error("disposer threw", error);
+      this.#deps.onDisposeError?.(error);
     }
   }
 }

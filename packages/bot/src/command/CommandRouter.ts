@@ -144,7 +144,7 @@ export class CommandRouter {
       return null;
     }
 
-    const ctx = this.#context(event, module, parsed.args, parsed.argLine);
+    const ctx = this.#context(event, command, module, parsed.args, parsed.argLine);
 
     let allowed: boolean;
     try {
@@ -215,6 +215,7 @@ export class CommandRouter {
 
   #context(
     event: PrivmsgEvent,
+    command: Command,
     module: string,
     args: readonly string[],
     argLine: string,
@@ -231,6 +232,8 @@ export class CommandRouter {
       log,
       reply: (text) => safeSay(client, target, text, log),
       replyPrivate: (text) => safeNotice(client, event.user.nick, text, log),
+      cooldown: (key, ms) => this.#deps.cooldowns.check(`cmdctx:${command.name}:${key}`, ms),
+      isIgnored: (e) => this.#deps.ignore.has(e, this.#deps.client.server?.caseMapper ?? null),
     };
   }
 

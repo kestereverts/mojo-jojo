@@ -31,6 +31,10 @@ export interface CommandContext {
   reply(text: string): boolean;
   /** Reply privately to the sender via NOTICE. Safe. */
   replyPrivate(text: string): boolean;
+  /** Per-key cooldown, namespaced to this command. `true` = allowed (+armed); `false` = cooling. */
+  cooldown(key: string, ms: number): boolean;
+  /** Is this sender on the bot-level ignore list? */
+  isIgnored(event: PrivmsgEvent): boolean;
 }
 
 /** A chat command registered through `ctx.command`. */

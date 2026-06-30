@@ -217,6 +217,8 @@ export class Bot {
       ignore: this.#ignore,
       caseMapper: () => this.#client.server?.caseMapper ?? null,
       registerCommand: (command, module) => this.#router.add(command, module),
+      onDisposeError: (error) =>
+        this.#events.emit({ type: "moduleError", name, phase: "dispose", error: asError(error) }),
     };
   }
 

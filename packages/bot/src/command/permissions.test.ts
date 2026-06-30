@@ -26,6 +26,8 @@ function ctx(opts: { sender?: FakeSender; owners?: string[] } = {}): CommandCont
     log,
     reply: () => true,
     replyPrivate: () => true,
+    cooldown: () => true,
+    isIgnored: () => false,
   };
 }
 
