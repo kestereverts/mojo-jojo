@@ -13,6 +13,8 @@ import {
 } from "./events/botEvents.ts";
 import { Cooldowns } from "./abuse/cooldown.ts";
 import { IgnoreList } from "./abuse/ignore.ts";
+import { CommandRouter } from "./command/CommandRouter.ts";
+import { matchOwner } from "./command/permissions.ts";
 import { ModuleRegistry } from "./module/registry.ts";
 import { loadExternalModule } from "./module/loadExternal.ts";
 import { ModuleHost, type ModuleHostDeps } from "./module/ModuleHost.ts";
@@ -48,6 +50,7 @@ export class Bot {
   readonly #registry: ModuleRegistry;
   readonly #cooldowns = new Cooldowns();
   readonly #ignore: IgnoreList;
+  readonly #router: CommandRouter;
   readonly #hosts: ModuleHost[] = [];
   readonly #lifecycleSub = new Subscription();
   readonly #botApi: BotApi;
@@ -72,7 +75,19 @@ export class Bot {
       requestStop: (reason) => {
         void this.stop(reason);
       },
+      listCommands: () => this.#router.list(),
+      isOwner: (event) => matchOwner(event, config.bot.owners, this.#client.server?.caseMapper ?? null),
     };
+    this.#router = new CommandRouter({
+      client: this.#client,
+      bot: this.#botApi,
+      log: this.#log,
+      events: this.#events,
+      cooldowns: this.#cooldowns,
+      ignore: this.#ignore,
+      prefix: config.bot.prefix,
+      allowPrefixlessInPm: config.bot.allowPrefixlessInPm,
+    });
   }
 
   /** The underlying IRC client (for inspection / direct stream access). */
@@ -111,6 +126,7 @@ export class Bot {
 
   async #doStart(): Promise<void> {
     this.#lifecycleSub.add(this.#client.lifecycle$.subscribe((event) => this.#logLifecycle(event)));
+    this.#router.start();
     await this.#loadModules();
     if (this.#registerSignals) this.#installSignals();
     await this.#client.connect();
@@ -183,6 +199,7 @@ export class Bot {
       cooldowns: this.#cooldowns,
       ignore: this.#ignore,
       caseMapper: () => this.#client.server?.caseMapper ?? null,
+      registerCommand: (command, module) => this.#router.add(command, module),
     };
   }
 
@@ -211,6 +228,7 @@ export class Bot {
         this.#log.error("module dispose failed", error);
       }
     }
+    this.#router.dispose();
     this.#lifecycleSub.unsubscribe();
     this.#client.quit(reason);
     this.#events.emit({ type: "stopped", reason });

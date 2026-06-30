@@ -7,6 +7,7 @@ import type {
   Message,
   PrivmsgEvent,
 } from "@mojo-jojo/irc-client";
+import type { Command } from "../command/types.ts";
 import type { Logger } from "../logging/logger.ts";
 import type { ModuleStorage } from "./storage.ts";
 
@@ -14,12 +15,16 @@ import type { ModuleStorage } from "./storage.ts";
 export type Disposer = () => void | Promise<void>;
 export type MaybePromise<T> = T | Promise<T>;
 
-/** Bot-level surface exposed to modules. Grows in M3 (`listCommands`, `isOwner`). */
+/** Bot-level surface exposed to modules. */
 export interface BotApi {
   readonly prefix: string;
   readonly owners: readonly string[];
   /** Request a graceful shutdown (e.g. an `!quit` command). */
   requestStop(reason?: string): void;
+  /** All registered commands across modules (for `help`). */
+  listCommands(): readonly Command[];
+  /** Is this PRIVMSG sender a configured bot owner? */
+  isOwner(event: PrivmsgEvent): boolean;
 }
 
 /**
@@ -44,6 +49,8 @@ export interface ModuleContext<C> {
   /** Completes when the module is disposed; use with `takeUntil(ctx.destroyed$)`. */
   readonly destroyed$: Observable<void>;
 
+  /** Register a chat command (auto-removed on module disposal). */
+  command(command: Command): void;
   /** Track a subscription so it is torn down on disposal; returns it for chaining. */
   track<T extends Unsubscribable>(sub: T): T;
   /** Callback façade over `clientEvents$`, auto-tracked and error-isolated. */

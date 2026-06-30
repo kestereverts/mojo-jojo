@@ -23,10 +23,11 @@ function makeDeps(client: IrcClient, over: Partial<ModuleHostDeps> = {}): Module
   return {
     client,
     log: new ConsoleLogger({ level: "silent" }),
-    bot: { prefix: "!", owners: [], requestStop: () => {} },
+    bot: { prefix: "!", owners: [], requestStop: () => {}, listCommands: () => [], isOwner: () => false },
     cooldowns: new Cooldowns(),
     ignore: new IgnoreList(),
     caseMapper: () => null,
+    registerCommand: () => () => {},
     ...over,
   };
 }

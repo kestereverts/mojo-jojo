@@ -17,6 +17,18 @@ describe("matchesIdentity", () => {
     expect(matchesIdentity(fakePrivmsg({ messageAccount: "" }), "account:", cm)).toBe(false);
   });
 
+  test("account: matches case-insensitively (services accounts are case-preserving)", () => {
+    expect(matchesIdentity(fakePrivmsg({ messageAccount: "bob" }), "account:Bob", cm)).toBe(true);
+  });
+
+  test("account: prefers the message tag and ignores a divergent cached entity account", () => {
+    // Message tag 'alice' present -> only it counts; the stale entity account 'bob' is ignored.
+    expect(matchesIdentity(fakePrivmsg({ messageAccount: "alice", account: "bob" }), "account:bob", cm)).toBe(false);
+    expect(matchesIdentity(fakePrivmsg({ messageAccount: "alice", account: "bob" }), "account:alice", cm)).toBe(true);
+    // No message tag -> fall back to the entity account.
+    expect(matchesIdentity(fakePrivmsg({ account: "bob" }), "account:bob", cm)).toBe(true);
+  });
+
   test("mask: glob-matches nick!user@host, case-insensitively", () => {
     const e = fakePrivmsg({ nick: "Alice", username: "ali", host: "host.example.com" });
     expect(matchesIdentity(e, "mask:*!*@host.example.com", cm)).toBe(true);

@@ -6,6 +6,13 @@
 // --- Runtime (M2) ---
 export { Bot, type BotDeps } from "./Bot.ts";
 
+// --- Command framework (M3) ---
+export { CommandRouter, type CommandRouterDeps } from "./command/CommandRouter.ts";
+export { parseCommandLine, type ParsedCommand } from "./command/parse.ts";
+export { checkPermission, matchOwner } from "./command/permissions.ts";
+export { replyTarget, safeNotice, safeSay } from "./command/reply.ts";
+export type { Command, CommandContext, Permission } from "./command/types.ts";
+
 // --- Module contract (M2) ---
 export {
   defineModule,

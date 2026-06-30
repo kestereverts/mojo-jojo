@@ -177,6 +177,38 @@ describe("Bot", () => {
     await bot.stop();
   });
 
+  test("dispatches a channel command end-to-end (!ping -> pong)", async () => {
+    const ping = defineModule({
+      name: "ping",
+      setup(ctx) {
+        ctx.command({ name: "ping", description: "pong", handler: (c) => void c.reply("pong") });
+      },
+    });
+    const { bot, mocks } = await startBot(makeConfig({ modules: { ping: {} } }), new ModuleRegistry({ ping: () => ping }));
+    const events: BotEvent[] = [];
+    bot.events$.subscribe((e) => events.push(e));
+    mocks[0]!.receiveLine(":mojo!u@h JOIN #chan");
+    mocks[0]!.receiveLine(":alice!a@h PRIVMSG #chan :!ping");
+    await waitFor(() => mocks[0]!.written.some((l) => l.startsWith("PRIVMSG #chan") && l.includes("pong")));
+    expect(events.some((e) => e.type === "commandInvoked" && e.command === "ping")).toBe(true);
+    await bot.stop();
+  });
+
+  test("does not react to its own echoed command", async () => {
+    const ping = defineModule({
+      name: "ping",
+      setup(ctx) {
+        ctx.command({ name: "ping", description: "pong", handler: (c) => void c.reply("pong") });
+      },
+    });
+    const { bot, mocks } = await startBot(makeConfig({ modules: { ping: {} } }), new ModuleRegistry({ ping: () => ping }));
+    mocks[0]!.receiveLine(":mojo!u@h JOIN #chan");
+    mocks[0]!.receiveLine(":mojo!u@h PRIVMSG #chan :!ping"); // self echo
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mocks[0]!.written.some((l) => l.startsWith("PRIVMSG #chan") && l.includes("pong"))).toBe(false);
+    await bot.stop();
+  });
+
   test("stop() disposes modules, quits, and emits stopped", async () => {
     let disposed = false;
     const m = defineModule({

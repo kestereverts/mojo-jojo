@@ -2,6 +2,7 @@ import { Subject, Subscription } from "rxjs";
 import type { CaseMapper, ClientEvent, IrcClient } from "@mojo-jojo/irc-client";
 import type { Cooldowns } from "../abuse/cooldown.ts";
 import type { IgnoreList } from "../abuse/ignore.ts";
+import type { Command } from "../command/types.ts";
 import type { Logger } from "../logging/logger.ts";
 import { MemoryStorage, type ModuleStorage } from "./storage.ts";
 import type { BotApi, Disposer, Module, ModuleContext } from "./types.ts";
@@ -16,6 +17,8 @@ export interface ModuleHostDeps {
   readonly ignore: IgnoreList;
   /** Live casemapping lookup (`null` before registration / between connections). */
   readonly caseMapper: () => CaseMapper | null;
+  /** Register a command on behalf of this module; returns an unregister. */
+  readonly registerCommand: (command: Command, module: string) => Disposer;
   /** Storage for this module; defaults to a fresh in-memory store. */
   readonly storage?: ModuleStorage;
 }
@@ -72,6 +75,10 @@ export class ModuleHost<C = unknown> {
       lifecycle$: client.lifecycle$,
       messages$: client.messages$,
       destroyed$: this.#destroyed$.asObservable(),
+      command: (command) => {
+        const unregister = this.#deps.registerCommand(command, this.module.name);
+        this.#subscriptions.add(() => unregister());
+      },
       track: (sub) => {
         this.#subscriptions.add(sub);
         return sub;
