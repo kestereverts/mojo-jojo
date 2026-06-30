@@ -96,15 +96,15 @@ export class Validator {
     return undefined;
   }
 
-  /** Non-empty (after trim) string; empty/whitespace records an issue. */
+  /** Non-empty string, **trimmed** (so it normalizes like env-sourced values); empty/whitespace fails. */
   optNonEmptyString(value: unknown, path: string): string | undefined {
     if (value === undefined) return undefined;
-    if (typeof value === "string" && value.trim().length > 0) return value;
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
     this.fail(path, "expected a non-empty string");
     return undefined;
   }
 
-  /** Array of non-empty strings; empty/whitespace elements are flagged by index. */
+  /** Array of non-empty **trimmed** strings; empty/whitespace elements are flagged by index. */
   optStringArray(value: unknown, path: string): string[] | undefined {
     if (value === undefined) return undefined;
     if (!Array.isArray(value)) {
@@ -115,7 +115,7 @@ export class Validator {
     let ok = true;
     for (let i = 0; i < value.length; i++) {
       const item = value[i];
-      if (typeof item === "string" && item.trim().length > 0) out.push(item);
+      if (typeof item === "string" && item.trim().length > 0) out.push(item.trim());
       else {
         this.fail(`${path}[${i}]`, "expected a non-empty string");
         ok = false;

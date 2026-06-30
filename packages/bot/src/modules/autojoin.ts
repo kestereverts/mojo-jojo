@@ -65,7 +65,8 @@ export function autojoinModule(): Module<AutojoinConfig> {
           clearPending();
           channels.forEach((channel, index) => {
             if (delayMs > 0) {
-              // Stagger: each channel joins `delayMs` after the previous one.
+              // Stagger: channel N joins at (N+1)*delayMs after registration (so the
+              // first is delayed `delayMs`, each subsequent one `delayMs` later).
               const timer = setTimeout(() => {
                 pending.delete(timer);
                 join(channel);

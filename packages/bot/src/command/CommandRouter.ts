@@ -75,7 +75,10 @@ export class CommandRouter {
         mergeMap((event) => this.#admit(event)),
         takeUntil(this.#destroyed$),
       )
-      .subscribe();
+      // Safety net: nothing in the pipeline should error (per-handler errors are caught
+      // in #admit, and emit() is isolated), but never let the dispatch subscription die
+      // silently if something unexpected does.
+      .subscribe({ error: (error) => this.#deps.log.error("command pipeline errored", error) });
   }
 
   /** Register a command (and its aliases). Throws on a duplicate name. Returns an unregister. */

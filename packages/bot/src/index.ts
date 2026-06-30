@@ -1,7 +1,8 @@
 // @mojo-jojo/bot — modular, RxJS-first IRC bot framework.
 //
-// Public surface grows per milestone. M1 ships the config layer; M2 the module
-// system core + Bot runtime; the command framework and built-in modules follow.
+// The public surface: the Bot runtime, the module-author contract, the command
+// framework, the config loader, logging, and identity/abuse helpers. Built-in
+// modules are exported from "@mojo-jojo/bot/modules".
 
 // --- Runtime (M2) ---
 export { Bot, type BotDeps } from "./Bot.ts";
@@ -50,7 +51,7 @@ export {
 // --- Abuse controls (M2) ---
 export { Cooldowns, systemClock, type Clock } from "./abuse/cooldown.ts";
 export { IgnoreList } from "./abuse/ignore.ts";
-export { matchesAny, matchesIdentity } from "./identity/match.ts";
+export { matchesAny, matchesIdentity, normalizeAccount, resolveAccount, senderKey } from "./identity/match.ts";
 
 // --- Config layer (M1) ---
 export { loadConfig } from "./config/load.ts";

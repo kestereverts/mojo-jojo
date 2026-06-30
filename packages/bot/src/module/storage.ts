@@ -3,6 +3,10 @@
  * interface is fixed now so persistence-needing modules (`seen`/`tell`/`karma`…)
  * don't each invent their own file I/O. Values are treated as data (structured-clone
  * semantics), so a stored value can't be mutated through a retained reference.
+ *
+ * `undefined` is NOT a storable value — `get` returns `undefined` for both an absent
+ * key and a key stored as `undefined`; persistence backends will diverge here, so use
+ * `has()` to test presence and avoid storing `undefined`.
  */
 export interface ModuleStorage {
   get<T = unknown>(key: string): Promise<T | undefined>;

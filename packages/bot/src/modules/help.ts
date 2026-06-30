@@ -42,7 +42,9 @@ export function helpModule(): Module {
           const query = c.args[0]?.toLowerCase();
           if (query) {
             const match = commands.find(
-              (cmd) => cmd.name === query || (cmd.aliases ?? []).map((a) => a.toLowerCase()).includes(query),
+              (cmd) =>
+                cmd.name.toLowerCase() === query ||
+                (cmd.aliases ?? []).map((a) => a.toLowerCase()).includes(query),
             );
             c.reply(match ? describe(c.bot.prefix, match) : `No such command: ${query}`);
             return;

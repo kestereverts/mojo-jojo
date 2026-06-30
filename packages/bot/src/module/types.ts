@@ -83,6 +83,8 @@ export interface Module<C = Record<string, never>> {
   setup(ctx: ModuleContext<C>): MaybePromise<Disposer | void>;
 }
 
+// `any` (not `unknown`) is deliberate: a factory for a specific config — `() => Module<C>`
+// — must be assignable to the stored `ModuleFactory` type, which `unknown` would block.
 export type ModuleFactory<C = any> = () => Module<C>;
 
 /** Identity helper that pins the config generic for inference. */

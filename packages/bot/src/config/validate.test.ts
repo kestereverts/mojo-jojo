@@ -118,6 +118,15 @@ describe("validateConfig", () => {
     }
   });
 
+  test("trims padded strings and array elements (consistent with env)", () => {
+    const cfg = validateConfig(
+      { server: { host: "h", nick: "n" }, bot: { prefix: " ! ", owners: ["  account:x  "] } },
+      DIR,
+    );
+    expect(cfg.bot.prefix).toBe("!");
+    expect(cfg.bot.owners).toEqual(["account:x"]);
+  });
+
   test("empty/whitespace prefix is rejected", () => {
     expect(issuesOf({ server: { host: "h", nick: "n" }, bot: { prefix: "" } }).some((i) => i.startsWith("bot.prefix:"))).toBe(true);
     expect(issuesOf({ server: { host: "h", nick: "n" }, bot: { prefix: "  " } }).some((i) => i.startsWith("bot.prefix:"))).toBe(true);

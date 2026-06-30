@@ -48,7 +48,17 @@ export class BotEventHub {
   readonly events$: Observable<BotEvent> = this.#subject.asObservable();
 
   emit(event: BotEvent): void {
-    this.#subject.next(event);
+    // emit() runs inside the command pipeline's hot path, so it must never throw.
+    // Guard the SYNCHRONOUS case (a raw Subscriber instance whose next throws), which
+    // would otherwise escape and tear down the router's subscription. Plain-callback
+    // subscribers are wrapped by RxJS in a SafeSubscriber that already isolates their
+    // throws (reporting them via RxJS's unhandled-error path), so those never reach
+    // here; `on`/`once` is the guarded, bot-logged consumption path.
+    try {
+      this.#subject.next(event);
+    } catch (error) {
+      this.#onListenerError(error);
+    }
   }
 
   on<T extends BotEvent["type"]>(type: T, handler: BotEventListener<T>): Unsubscribe {

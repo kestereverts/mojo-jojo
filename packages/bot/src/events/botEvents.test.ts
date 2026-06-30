@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test";
+import { config } from "rxjs";
 import { BotEventHub, type BotEvent } from "./botEvents.ts";
+
+/**
+ * Run `fn` with RxJS's async unhandled-error report swallowed (for deliberate subscriber
+ * throws). RxJS reports on a deferred macrotask, so we flush one tick before restoring.
+ */
+async function withSwallowedRxErrors(fn: () => void): Promise<void> {
+  const previous = config.onUnhandledError;
+  config.onUnhandledError = () => {};
+  try {
+    fn();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  } finally {
+    config.onUnhandledError = previous;
+  }
+}
 
 describe("BotEventHub", () => {
   test("emit reaches events$ subscribers", () => {
@@ -88,6 +104,19 @@ describe("BotEventHub", () => {
     expect(() => hub.emit({ type: "started" })).not.toThrow();
     expect(seen).toEqual(["ok"]);
     expect(errors).toHaveLength(1);
+  });
+
+  test("emit() never throws and keeps delivering to other subscribers when one throws", async () => {
+    await withSwallowedRxErrors(() => {
+      const hub = new BotEventHub();
+      const seen: string[] = [];
+      hub.events$.subscribe(() => {
+        throw new Error("subscriber boom");
+      });
+      hub.events$.subscribe((e) => seen.push(e.type));
+      expect(() => hub.emit({ type: "started" })).not.toThrow();
+      expect(seen).toEqual(["started"]); // RxJS isolates the throw; the next subscriber still receives it
+    });
   });
 
   test("on() after complete() is an inert no-op", () => {

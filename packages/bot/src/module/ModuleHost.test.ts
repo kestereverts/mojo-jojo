@@ -109,6 +109,31 @@ describe("ModuleHost", () => {
     expect(order).toEqual(["setupDisposer", "cleanup2", "cleanup1"]);
   });
 
+  test("a throwing tracked-subscription teardown still runs the setup disposer and onCleanup", async () => {
+    const { client } = fakeClient();
+    const order: string[] = [];
+    const mod = defineModule({
+      name: "m",
+      setup(ctx) {
+        ctx.track({
+          unsubscribe() {
+            throw new Error("teardown boom");
+          },
+        });
+        ctx.onCleanup(() => {
+          order.push("cleanup");
+        });
+        return () => {
+          order.push("setupDisposer");
+        };
+      },
+    });
+    const host = makeHost(mod, {}, client);
+    await host.setup();
+    await host.dispose(); // must not throw despite the faulting subscription teardown
+    expect(order).toEqual(["setupDisposer", "cleanup"]);
+  });
+
   test("dispose is idempotent and isolates a throwing disposer", async () => {
     const { client } = fakeClient();
     let runs = 0;

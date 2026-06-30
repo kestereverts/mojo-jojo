@@ -116,12 +116,25 @@ export class ModuleHost<C = unknown> {
   async dispose(): Promise<void> {
     if (this.#disposed) return;
     this.#disposed = true;
-    this.#destroyed$.next();
-    this.#destroyed$.complete();
-    this.#subscriptions.unsubscribe();
+    // Each teardown step is isolated so a throw in one (a faulting `takeUntil`
+    // teardown, or an aggregated `UnsubscriptionError`) can't skip the rest.
+    this.#guard(() => {
+      this.#destroyed$.next();
+      this.#destroyed$.complete();
+    }, "destroyed$ teardown");
+    this.#guard(() => this.#subscriptions.unsubscribe(), "subscription teardown");
     await this.#runDisposer(this.#setupDisposer);
     for (let i = this.#cleanups.length - 1; i >= 0; i--) {
       await this.#runDisposer(this.#cleanups[i]);
+    }
+  }
+
+  #guard(fn: () => void, what: string): void {
+    try {
+      fn();
+    } catch (error) {
+      this.#deps.log.error(`${what} threw`, error);
+      this.#deps.onDisposeError?.(error);
     }
   }
 

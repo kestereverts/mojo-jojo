@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { takeUntil } from "rxjs";
+import { config, takeUntil } from "rxjs";
 import { MockTransport, type TransportFactory } from "@mojo-jojo/irc-client";
 import { Bot } from "./Bot.ts";
 import { ConsoleLogger } from "./logging/logger.ts";
@@ -297,6 +297,41 @@ describe("Bot", () => {
     expect(
       events.some((e) => e.type === "moduleError" && e.name === "baddispose" && e.phase === "dispose"),
     ).toBe(true);
+  });
+
+  test("start() is single-use — a call after stop() rejects", async () => {
+    const { bot } = await startBot(makeConfig());
+    await bot.stop();
+    let caught: Error | undefined;
+    await bot.start().catch((e: unknown) => (caught = e as Error));
+    expect(caught?.message).toMatch(/stopped|single-use/);
+  });
+
+  test("a throwing events$ subscriber does not kill command dispatch", async () => {
+    // The buggy subscriber's throw is reported by RxJS asynchronously; swallow that
+    // report so it doesn't surface as an unhandled error mid-suite.
+    const prevOnError = config.onUnhandledError;
+    config.onUnhandledError = () => {};
+    try {
+      const ping = defineModule({
+        name: "ping",
+        setup(ctx) {
+          ctx.command({ name: "ping", description: "p", handler: (c) => void c.reply("pong") });
+        },
+      });
+      const { bot, mocks } = await startBot(makeConfig({ modules: { ping: {} } }), new ModuleRegistry({ ping: () => ping }));
+      bot.events$.subscribe(() => {
+        throw new Error("buggy subscriber");
+      });
+      mocks[0]!.receiveLine(":mojo!u@h JOIN #chan");
+      mocks[0]!.receiveLine(":alice!a@h PRIVMSG #chan :!ping");
+      await waitFor(() => mocks[0]!.written.some((l) => l.startsWith("PRIVMSG #chan") && l.includes("pong")));
+      await bot.stop();
+    } finally {
+      // Let RxJS's deferred unhandled-error reports flush (still swallowed) before restoring.
+      await new Promise((r) => setTimeout(r, 0));
+      config.onUnhandledError = prevOnError;
+    }
   });
 
   test("stop() before start() is a safe no-op", async () => {

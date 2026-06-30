@@ -121,14 +121,29 @@ export class Bot {
     this.#events.off(type, handler);
   }
 
-  /** Load modules, connect, and register. Resolves once registered; rejects on terminal failure. */
+  /**
+   * Load modules, connect, and register. Resolves once registered; rejects on terminal
+   * failure (and self-cleans). **Single-use:** a second call — or any call after
+   * {@link stop} — rejects. Construct a new `Bot` to reconnect.
+   */
   start(): Promise<void> {
-    if (this.#starting) return this.#starting;
+    if (this.#torndown) {
+      return Promise.reject(new Error("Bot.start: the bot has already been stopped (single-use)"));
+    }
+    if (this.#starting) {
+      return Promise.reject(new Error("Bot.start: already started (single-use)"));
+    }
     this.#starting = this.#doStart();
     return this.#starting;
   }
 
-  /** Dispose modules and quit. Idempotent; awaits an in-flight {@link start}. */
+  /**
+   * Dispose modules and quit. Idempotent. Awaits an in-flight {@link start} first (so a
+   * stop mid-startup can't race a half-initialized host set) — which means a stop during
+   * the initial connect only takes effect once `connect()` settles (bounded by
+   * `connectTimeoutMs`), and a module whose `setup()` blocks indefinitely will delay it.
+   * Module `setup` must not block.
+   */
   stop(reason = "Shutting down"): Promise<void> {
     if (this.#stopping) return this.#stopping;
     this.#stopping = this.#doStop(reason);
