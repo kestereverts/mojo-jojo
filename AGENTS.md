@@ -1,9 +1,9 @@
 # Repository Notes
 
 - This is a Bun workspace repo, not Node/npm. Use Bun 1.3.x; `.tool-versions` pins `bun 1.3.14` and `package.json` sets `packageManager` to `bun@1.3.14`.
-- Workspaces are `apps/*` and `packages/*`. Current implemented workspaces are `@mojo-jojo/app`, `@mojo-jojo/irc-message`, and `@mojo-jojo/irc-client`.
-- `apps/app/index.ts` is still a placeholder app entrypoint (`console.log("Hello via Bun!")`); the root `README.md` describes the bot goal, not current app behavior.
-- `packages/irc-message` is the raw IRCv3 line parser/serializer; `packages/irc-client` is the RxJS-first IRC client built on top of it. Both export from `src/index.ts`.
+- Workspaces are `apps/*` and `packages/*`. Implemented workspaces are `@mojo-jojo/app`, `@mojo-jojo/irc-message`, `@mojo-jojo/irc-client`, and `@mojo-jojo/bot`.
+- `apps/app/index.ts` is the runnable bot: it `loadConfig()`s `apps/app/config.toml` and starts a `Bot`. `config.example.toml` is the annotated template; secrets come from env, not the file.
+- `packages/irc-message` is the raw IRCv3 line parser/serializer; `packages/irc-client` is the RxJS-first IRC client built on it; `packages/bot` is the modular bot framework built on the client. All export from `src/index.ts`.
 - `CLAUDE.md` only delegates to this file with `@AGENTS.md`; keep repo guidance here.
 
 ## Commands
@@ -14,6 +14,8 @@
 - App-only runtime commands from `apps/app`: `bun run start` for one run, `bun run dev` for watch mode.
 - Focused tests run from the package directory, e.g. `bun test src/parse.test.ts` in `packages/irc-message` or `bun test src/IrcClient.test.ts` in `packages/irc-client`.
 - `packages/irc-client/src/smoke.test.ts` is skipped unless `IRC_SMOKE=1`; it opens a real IRC TCP/TLS connection and accepts `IRC_SMOKE_HOST`, `IRC_SMOKE_PORT`, `IRC_SMOKE_TLS=0`, `IRC_SMOKE_TLS_INSECURE=1`, `IRC_SMOKE_CHANNEL`, plus optional `IRC_SASL_USER`/`IRC_SASL_PASS`.
+- `packages/bot/src/bot.smoke.test.ts` is skipped unless `BOT_SMOKE=1`; it boots a real `Bot` plus a second client against `#mojo2` and asserts autojoin + a live `!ping`→`pong`. Reuses the same `IRC_SMOKE_*` env. Run: `BOT_SMOKE=1 bun test src/bot.smoke.test.ts` from `packages/bot`.
+- App runtime: `bun run start` / `bun run dev` from `apps/app` reads `apps/app/config.toml` (override path with `BOT_CONFIG`).
 - There is no root `test` script, no configured lint/formatter scripts, and no CI workflows.
 
 ## TypeScript And Build
@@ -39,6 +41,14 @@
 - `messages$`, `events$`, `clientEvents$`, and `lifecycle$` are stable across reconnects. `StateStore` and per-entity streams are rebuilt/disposed per connection, so stale `Channel`/`User` references complete after reconnect or quit.
 - `OutboundQueue.send` is strict and throws on CR/LF/NUL injection, over-512-byte wire lines, or full queues; `sendImmediate` is for internal priority traffic and strips/truncates instead.
 - Live state is bounded and IRC-casemapping-aware; do not replace `IrcMap`/`IrcSet` lookups with plain `Map`/`Set` for nicks or channels.
+
+## IRC Bot Package
+
+- `packages/bot` (`@mojo-jojo/bot`) is the modular bot framework on top of `irc-client`. A `Bot` is one `IrcClient` plus modules loaded from a TOML config; it is RxJS-first internally and exposes its own events as both `events$` and an `on()/once()/off()` façade.
+- Config: `loadConfig()` parses TOML (`Bun.TOML.parse`), merges env overrides (env wins for secrets), and validates with the zero-dep `Validator` (collect-all-errors). Secrets (`IRC_PASSWORD`, `IRC_SASL_*`) come from env, never the file. `ServerConfig` maps to `IrcClientOptions`.
+- Modules are factories returning a `Module` (`name`, optional `parseConfig`, `setup(ctx)`). `setup` gets a `ModuleContext`: the client, RxJS streams, `destroyed$`, `track()`, `command()`, `cooldown`/`isIgnored`, namespaced `storage`, scoped `log`, and `onCleanup`. Subscriptions are torn down on dispose; per-connection work must hang off the `registered` lifecycle event (modules persist across reconnects).
+- Built-in modules (`src/modules/`): `ping`, `help`, `admin` (owner-only; `!raw` opt-in), `ctcp` (rate-limited), `autojoin` (reconnect-safe). `builtinModules` seeds the default registry; external modules come from config `externalModules` (dynamically imported — config is a trust boundary equal to bot code).
+- Commands run through a single bounded RxJS PRIVMSG pipeline (`CommandRouter`): cheap parse/lookup/ignore/permission gating, then an `#inFlight` concurrency cap that drops on saturation; per-handler timeout; cooldown after admission. Replies go through `safeSay`/`safeNotice` (the client's `send()` throws synchronously on bad input). One `Bot` = one network.
 
 ## Agent Files
 

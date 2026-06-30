@@ -1,0 +1,59 @@
+# mojo-jojo bot — annotated configuration template. Copy to config.toml and edit.
+#
+# SECRETS NEVER GO IN THIS FILE. The server password and SASL password come from the
+# environment and override anything here:
+#   IRC_PASSWORD, IRC_SASL_USER, IRC_SASL_PASS
+# Other handy env overrides: IRC_HOST, IRC_PORT, IRC_NICK, IRC_TLS (0/1),
+# IRC_TLS_INSECURE (1), BOT_PREFIX, BOT_OWNERS (comma-separated), BOT_CONFIG (path).
+#
+# NOTE: top-level keys (like `externalModules`) MUST appear before any [table] section.
+
+# External modules: relative paths (resolved against THIS file's directory) or package
+# specifiers. Listing one registers AND enables it; its [modules.<name>] table (if any)
+# supplies options. Each is dynamically imported and runs with full process privilege —
+# treat this config file as trusted as the bot's own code.
+externalModules = []
+
+[server]
+host = "irc.example.org"
+port = 6697            # default 6697 with TLS, 6667 without
+tls = true             # or false; or a [server.tls] table with rejectUnauthorized
+nick = "mojo-jojo"
+username = "mojo"      # defaults to nick
+realName = "Mojo Jojo" # defaults to nick
+altNicks = ["mojo-jojo_", "mojo-jojo__"]
+caps = "default"       # "default" (curated set), "all", or an explicit list
+# password = "..."     # prefer IRC_PASSWORD
+
+# [server.sasl]        # prefer IRC_SASL_USER / IRC_SASL_PASS for the password
+# mechanism = "PLAIN"
+# username = "mojo"
+
+[server.reconnect]
+enabled = true
+initialDelayMs = 1000
+maxDelayMs = 30000
+
+[bot]
+prefix = "!"
+owners = ["account:you"] # account:<name> (best), mask:<nick!user@host>, or a bare nick
+ignore = []              # same matcher forms; matched senders are dropped before dispatch
+allowPrefixlessInPm = true
+failOnModuleError = false # true = a module that fails to load aborts startup
+logLevel = "info"         # debug | info | warn | error | silent
+
+# A [modules.<name>] table enables and configures a module (presence = enabled).
+[modules.ping]
+[modules.help]
+
+[modules.admin]
+allowRaw = false # gate the powerful owner-only !raw command (off by default)
+
+[modules.ctcp]
+version = "mojo-jojo"
+
+[modules.autojoin]
+channels = ["#mojo2"]
+# delayMs = 0
+# [modules.autojoin.keys]
+# "#secret" = "hunter2"

@@ -12,13 +12,42 @@ thin `on()/once()/off()` façade.
 A `Bot` drives exactly **one network** (one `IrcClient`). For multiple networks, run
 multiple `Bot`s — optionally sharing a `ModuleRegistry` — rather than multiplexing one.
 
-> Status: under construction; see the build plan for the full milestone breakdown.
-
 ## Layout
 
-- `config/` — TOML loader, env-override merge, zero-dep validation, and the mapping to
-  `IrcClientOptions`.
-- `module/`, `command/`, `events/`, `abuse/`, `logging/`, `modules/` — added in later milestones.
+- `config/` — TOML loader, env-override merge, zero-dep validation, mapping to `IrcClientOptions`.
+- `module/` — the `Module`/`ModuleContext` contract, registry, external loader, and host.
+- `command/` — `!cmd` parser, permissions, safe reply helpers, and the bounded `CommandRouter`.
+- `events/` — the `BotEvent` union + `BotEventHub` (`events$` + `on/once/off`).
+- `abuse/` — per-key cooldowns and the account/mask ignore list. `identity/` — sender matching.
+- `logging/` — the leveled `ConsoleLogger`. `modules/` — the built-in modules + registry.
+- `Bot.ts` — the runtime (load → connect → graceful teardown).
+
+## Writing a module
+
+A module is a `ModuleFactory` — a function returning a `Module`. `setup(ctx)` gets the
+`ModuleContext`; register commands and/or subscribe to streams, and clean up via the
+tracked subscriptions or `onCleanup`.
+
+```ts
+import { defineModule, type Module } from "@mojo-jojo/bot";
+
+export function helloModule(): Module {
+  return defineModule({
+    name: "hello",
+    setup(ctx) {
+      // A chat command (auto-removed on dispose):
+      ctx.command({ name: "hello", description: "Greet.", handler: (c) => void c.reply("hi!") });
+      // Or a raw stream — bind teardown with takeUntil(ctx.destroyed$):
+      // ctx.events$.pipe(takeUntil(ctx.destroyed$)).subscribe((e) => { ... });
+    },
+  });
+}
+
+export default helloModule; // so it can be loaded as an externalModule
+```
+
+List it under `externalModules` in config and configure it via `[modules.hello]`. Per-connection
+work must hang off the `registered` lifecycle event (modules persist across reconnects).
 
 ## Config
 

@@ -13,6 +13,9 @@
     "apps/app": {
       "name": "@mojo-jojo/app",
       "version": "0.1.0",
+      "dependencies": {
+        "@mojo-jojo/bot": "workspace:*",
+      },
     },
     "packages/bot": {
       "name": "@mojo-jojo/bot",
