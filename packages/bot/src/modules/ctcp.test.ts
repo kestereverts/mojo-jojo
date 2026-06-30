@@ -26,6 +26,15 @@ describe("ctcpModule", () => {
     await h.stop();
   });
 
+  test("never responds to ACTION or to a NOTICE (anti-loop)", async () => {
+    const h = await bootBot({ modules: { ctcp: {} }, factories: { ctcp: ctcpModule } });
+    h.send(`:alice!a@h PRIVMSG mojo :${A}ACTION waves${A}`); // ACTION -> action event, not privmsg
+    h.send(`:alice!a@h NOTICE mojo :${A}VERSION${A}`); // a CTCP reply carried in a NOTICE
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.written().some((l) => l.startsWith("NOTICE"))).toBe(false);
+    await h.stop();
+  });
+
   test("ignores unknown CTCP and our own echo", async () => {
     const h = await bootBot({ modules: { ctcp: {} }, factories: { ctcp: ctcpModule } });
     h.send(`:alice!a@h PRIVMSG mojo :${A}FOOBAR${A}`); // unknown tag

@@ -21,6 +21,17 @@ export function normalizeAccount(account: string | null | undefined): string | n
   return account;
 }
 
+/**
+ * The sender's effective account, per IRCv3 precedence: a PRESENT message account-tag
+ * is authoritative — including `*`/`""`, which mean "logged out" (→ `null`). Only when
+ * the message carries no tag at all do we fall back to the cached entity account.
+ * (`event.account` is the raw tag value, or `null` when there is no tag.)
+ */
+export function resolveAccount(event: PrivmsgEvent): string | null {
+  if (event.account !== null) return normalizeAccount(event.account);
+  return normalizeAccount(event.user.account);
+}
+
 // Compiled-glob cache (masks come from fixed config lists, so this stays small).
 const GLOB_CACHE = new Map<string, RegExp>();
 const GLOB_CACHE_MAX = 256;
@@ -40,11 +51,21 @@ function asciiEqualsIgnoreCase(a: string, b: string): boolean {
   return a.toLowerCase() === b.toLowerCase();
 }
 
-function matchesMask(event: PrivmsgEvent, mask: string): boolean {
+function matchesMask(event: PrivmsgEvent, mask: string, caseMapper: CaseMapper | null): boolean {
   const { nick, username, host } = event.user;
   // Fail closed: an unknown user/host must never match a wildcard.
   if (username === null || host === null) return false;
-  return globToRegExp(mask).test(`${nick}!${username}@${host}`);
+  const fold = (s: string): string => (caseMapper ? caseMapper.normalize(s) : s.toLowerCase());
+  const bang = mask.indexOf("!");
+  if (bang < 0) {
+    // No nick separator: ASCII-glob the whole hostmask.
+    return globToRegExp(mask).test(`${nick}!${username}@${host}`);
+  }
+  // Fold the NICK part under the server CASEMAPPING (so `a{b}` matches `a[b]` on
+  // rfc1459); the user@host part stays ASCII case-insensitive.
+  const nickOk = globToRegExp(fold(mask.slice(0, bang))).test(fold(nick));
+  const hostOk = globToRegExp(mask.slice(bang + 1)).test(`${username}@${host}`);
+  return nickOk && hostOk;
 }
 
 /**
@@ -60,13 +81,11 @@ export function matchesIdentity(
   if (pattern.startsWith(ACCOUNT_PREFIX)) {
     const account = pattern.slice(ACCOUNT_PREFIX.length);
     if (account.length === 0) return false;
-    // Prefer the message-scoped account-tag; only fall back to the cached entity
-    // account when the message carries none. Accounts compare case-insensitively (ASCII).
-    const actual = normalizeAccount(event.account) ?? normalizeAccount(event.user.account);
+    const actual = resolveAccount(event);
     return actual !== null && asciiEqualsIgnoreCase(actual, account);
   }
   if (pattern.startsWith(MASK_PREFIX)) {
-    return matchesMask(event, pattern.slice(MASK_PREFIX.length));
+    return matchesMask(event, pattern.slice(MASK_PREFIX.length), caseMapper);
   }
   return caseMapper
     ? caseMapper.equals(event.user.nick, pattern)
@@ -81,7 +100,7 @@ export function matchesIdentity(
  * users there share a key — an acceptable trade for rate-limiting.
  */
 export function senderKey(event: PrivmsgEvent, caseMapper: CaseMapper | null): string {
-  const account = normalizeAccount(event.account) ?? normalizeAccount(event.user.account);
+  const account = resolveAccount(event);
   if (account) return `account:${account.toLowerCase()}`;
   const { nick, username, host } = event.user;
   if (username !== null && host !== null) {

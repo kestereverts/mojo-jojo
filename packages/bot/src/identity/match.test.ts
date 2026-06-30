@@ -21,6 +21,19 @@ describe("matchesIdentity", () => {
     expect(matchesIdentity(fakePrivmsg({ messageAccount: "bob" }), "account:Bob", cm)).toBe(true);
   });
 
+  test("account: a present '*' tag is authoritative (no fallback to a stale cached account)", () => {
+    // Message says logged-out (`*`) but the entity cache still holds 'boss' — must NOT match.
+    expect(matchesIdentity(fakePrivmsg({ messageAccount: "*", account: "boss" }), "account:boss", cm)).toBe(false);
+    // No tag at all → fall back to the cached account.
+    expect(matchesIdentity(fakePrivmsg({ account: "boss" }), "account:boss", cm)).toBe(true);
+  });
+
+  test("mask: the nick part folds under the server casemapping", () => {
+    const e = fakePrivmsg({ nick: "a[b]", username: "u", host: "h" });
+    expect(matchesIdentity(e, "mask:a{b}!*@*", cm)).toBe(true); // rfc1459 folds [ -> {
+    expect(matchesIdentity(e, "mask:a{b}!*@*", new CaseMapper("ascii"))).toBe(false); // ascii does not
+  });
+
   test("account: prefers the message tag and ignores a divergent cached entity account", () => {
     // Message tag 'alice' present -> only it counts; the stale entity account 'bob' is ignored.
     expect(matchesIdentity(fakePrivmsg({ messageAccount: "alice", account: "bob" }), "account:bob", cm)).toBe(false);

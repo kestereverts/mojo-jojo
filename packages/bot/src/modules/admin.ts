@@ -31,7 +31,8 @@ function parseRawLine(line: string): { command: string; params: string[] } | nul
   const trailing = colon >= 0 ? line.slice(colon + 2) : undefined;
   const tokens = head.split(/\s+/).filter((t) => t.length > 0);
   const command = tokens.shift();
-  if (!command) return null;
+  // Reject a source-/tag-prefixed token (`:`/`@`): a command word is never one.
+  if (!command || command.startsWith(":") || command.startsWith("@")) return null;
   if (trailing !== undefined) tokens.push(trailing);
   return { command, params: tokens };
 }
