@@ -54,6 +54,17 @@ describe("Cooldowns", () => {
     expect(cd.check("c", 1000)).toBe(false); // c is still cooling (not evicted)
   });
 
+  test("evicts the soonest-expiring entry, not a fresher long-lived one, under a flood (B1)", () => {
+    const cd = new Cooldowns(fakeClock(), 2); // frozen clock — nothing expires
+    expect(cd.check("long", 10000)).toBe(true); // inserted first, long-lived
+    expect(cd.check("short", 100)).toBe(true); // inserted second, expires soon; table full
+    // Third key at capacity, all active: evict the SOONEST-expiring (short),
+    // never the still-fresh long cooldown.
+    expect(cd.check("new", 100)).toBe(true);
+    expect(cd.check("long", 10000)).toBe(false); // long survived — still cooling
+    expect(cd.check("short", 100)).toBe(true); // short was evicted — allowed again
+  });
+
   test("re-checking an existing cooling key does not count against the bound", () => {
     const cd = new Cooldowns(fakeClock(), 1);
     expect(cd.check("a", 1000)).toBe(true);

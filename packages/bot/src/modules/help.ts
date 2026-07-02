@@ -41,7 +41,15 @@ export function helpModule(): Module {
         handler: (c) => {
           // Only show commands the requester could actually run, so `help` doesn't leak
           // the owner-only admin surface (or confirm an owner command exists) to everyone.
-          const commands = c.bot.listCommands().filter((cmd) => checkPermission(cmd.permission ?? "anyone", c));
+          const commands = c.bot.listCommands().filter((cmd) => {
+            // A module-supplied permission predicate may throw; isolate it so one
+            // bad command excludes only itself rather than blanking all of !help.
+            try {
+              return checkPermission(cmd.permission ?? "anyone", c);
+            } catch {
+              return false;
+            }
+          });
           const query = c.args[0]?.toLowerCase();
           if (query) {
             const match = commands.find(

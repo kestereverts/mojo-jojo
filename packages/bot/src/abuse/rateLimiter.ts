@@ -32,7 +32,8 @@ export class RateLimiter {
 
   constructor(options: RateLimiterOptions) {
     this.#capacity = Math.max(1, options.capacity);
-    this.#refillMs = options.refillMs;
+    // Guard against a zero/negative period (division by zero → NaN refill).
+    this.#refillMs = Math.max(1, options.refillMs);
     this.#clock = options.clock ?? systemClock;
     this.#maxKeys = options.maxKeys ?? DEFAULT_MAX_KEYS;
   }
@@ -49,7 +50,10 @@ export class RateLimiter {
       const refill = Math.floor((now - bucket.updated) / this.#refillMs);
       if (refill > 0) {
         bucket.tokens = Math.min(this.#capacity, bucket.tokens + refill);
-        bucket.updated = now;
+        // Advance by the whole periods actually credited, NOT to `now` — dropping
+        // the sub-period remainder would slow the sustained rate below 1/refillMs
+        // and wrongly limit evenly-paced senders.
+        bucket.updated += refill * this.#refillMs;
       }
     }
     if (bucket.tokens <= 0) return false;

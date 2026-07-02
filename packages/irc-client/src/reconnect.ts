@@ -22,6 +22,13 @@ export interface ReconnectPolicy {
   readonly maxRetries: number;
 }
 
+/**
+ * Largest delay a timer can hold without overflowing: `setTimeout` clamps any
+ * delay > 2**31-1 to ~1ms, which would turn an unbounded backoff (e.g.
+ * `maxDelayMs: Infinity`) into a hot reconnect loop. Cap the computed delay here.
+ */
+const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
+
 /** Injectable seams for {@link retryWithBackoff} (deterministic in tests). */
 export interface BackoffDeps {
   /** Scheduler for the delay timer (default `asyncScheduler`). */
@@ -48,7 +55,11 @@ export function backoffDelay(
   random: () => number = Math.random,
 ): number {
   const exponent = Math.max(0, attempt - 1);
-  const base = Math.min(policy.maxDelayMs, policy.initialDelayMs * policy.factor ** exponent);
+  const base = Math.min(
+    MAX_TIMER_DELAY_MS,
+    policy.maxDelayMs,
+    policy.initialDelayMs * policy.factor ** exponent,
+  );
   if (!policy.jitter) return base;
   const half = base / 2;
   return half + random() * half;

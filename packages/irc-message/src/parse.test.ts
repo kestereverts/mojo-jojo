@@ -59,6 +59,14 @@ describe("parseMessage", () => {
         host: "host",
       });
     });
+
+    test("an explicit but empty user is preserved (C8)", () => {
+      expect(parseMessage(":nick!@host CMD").source).toEqual({
+        name: "nick",
+        user: "",
+        host: "host",
+      });
+    });
   });
 
   describe("tags", () => {
@@ -88,6 +96,21 @@ describe("parseMessage", () => {
 
     test("duplicate keys resolve last-wins", () => {
       expect(parseMessage("@k=1;k=2 PING").tags).toEqual({ k: "2" });
+    });
+
+    test("a '+' before an empty key does not leak onto the next tag (C3)", () => {
+      expect(parseMessage("@+;a=1 PING x").tags).toEqual({ a: "1" });
+    });
+
+    test("a keyless '=value' does not leak its value onto the next tag (C4)", () => {
+      expect(parseMessage("@=v;a PING x").tags).toEqual({ a: "" });
+    });
+
+    test("a tag named __proto__ is an own string property, not the prototype (C5)", () => {
+      const tags = parseMessage("@__proto__=evil;a=1 PING x").tags;
+      expect(Object.keys(tags).sort()).toEqual(["__proto__", "a"]);
+      expect(typeof tags["__proto__"]).toBe("string");
+      expect(tags["__proto__"]).toBe("evil");
     });
   });
 

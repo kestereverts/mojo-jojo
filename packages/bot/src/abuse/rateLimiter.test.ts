@@ -24,6 +24,18 @@ describe("RateLimiter", () => {
     expect(rl.tryConsume("a")).toBe(false);
   });
 
+  test("does not lose the sub-period remainder on refill (evenly-paced senders admitted)", () => {
+    let now = 0;
+    const rl = new RateLimiter({ capacity: 1, refillMs: 1000, clock: { now: () => now } });
+    expect(rl.tryConsume("a")).toBe(true); // t=0: tokens 1→0, updated=0
+    now = 1500;
+    expect(rl.tryConsume("a")).toBe(true); // refill 1 → allowed; updated advances to 1000, not 1500
+    now = 2000;
+    // Two full periods have elapsed since t=0. The dropped 500ms remainder used
+    // to deny this; with the remainder kept, floor((2000-1000)/1000)=1 → allowed.
+    expect(rl.tryConsume("a")).toBe(true);
+  });
+
   test("bounds the key table by evicting the oldest", () => {
     let now = 0;
     const rl = new RateLimiter({ capacity: 1, refillMs: 1000, clock: { now: () => now }, maxKeys: 2 });

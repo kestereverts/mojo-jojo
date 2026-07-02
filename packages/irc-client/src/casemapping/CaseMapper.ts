@@ -45,8 +45,24 @@ export class CaseMapper {
     const ascii = this.mapping === "ascii";
     // `rfc1459` additionally folds `~`->`^`; `rfc1459-strict` does not.
     const foldTilde = this.mapping === "rfc1459";
-    let out = "";
-    for (let i = 0; i < name.length; i++) {
+    // Fast path: scan for the first char that needs folding. The common case —
+    // an already-lowercase nick/channel, checked several times per message — then
+    // returns the input string unchanged with zero allocation.
+    let i = 0;
+    for (; i < name.length; i++) {
+      const code = name.charCodeAt(i);
+      if (
+        (code >= CODE_A && code <= CODE_Z) ||
+        (!ascii && code >= CODE_LBRACKET && code <= CODE_RBRACKET) ||
+        (foldTilde && code === CODE_TILDE)
+      ) {
+        break;
+      }
+    }
+    if (i === name.length) return name; // nothing to fold
+
+    let out = name.slice(0, i);
+    for (; i < name.length; i++) {
       let code = name.charCodeAt(i);
       if (code >= CODE_A && code <= CODE_Z) {
         code += TO_LOWER_OFFSET; // A-Z -> a-z

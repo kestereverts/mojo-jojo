@@ -114,6 +114,11 @@ describe("validateConfig", () => {
     expect(issuesOf(raw).some((i) => i.includes("__proto__") && i.includes("reserved"))).toBe(true);
   });
 
+  test("rejects a module name containing ':' (namespace hygiene, B2)", () => {
+    const raw = { server: { host: "h", nick: "n" }, modules: { "cmd:evil": {} } };
+    expect(issuesOf(raw).some((i) => i.includes("cmd:evil") && i.includes("':'"))).toBe(true);
+  });
+
   test("invalid logLevel fails with the allowed set", () => {
     const issues = issuesOf({ server: { host: "h", nick: "n" }, bot: { logLevel: "loud" } });
     expect(issues.some((i) => i.startsWith("bot.logLevel:"))).toBe(true);

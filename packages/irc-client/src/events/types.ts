@@ -40,6 +40,12 @@ interface MessageLikeEvent extends BaseEvent {
   readonly isPrivate: boolean;
   /** `account-tag` value, when present. */
   readonly account: string | null;
+  /**
+   * STATUSMSG prefix the message was addressed to (e.g. `@` for `@#chan`), or
+   * `""`/absent when the target carried none. The channel is resolved from the
+   * bare name regardless, so an ops-wall is `isPrivate: false`, not a PM.
+   */
+  readonly statusPrefix?: string;
 }
 
 /** A `PRIVMSG`. `user` is always resolved (channel/PM messages carry a nick). */

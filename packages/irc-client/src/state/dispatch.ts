@@ -3,7 +3,7 @@ import type { StateStore } from "./StateStore.ts";
 import type { User } from "../entities/User.ts";
 import type { IrcEvent } from "../events/types.ts";
 import { EMIT } from "../entities/internal.ts";
-import { isChannelName } from "../isupport/parseIsupport.ts";
+import { isChannelName, splitStatusPrefix } from "../isupport/parseIsupport.ts";
 import { parseModeChanges, type ModeChange } from "../protocol/modeParser.ts";
 import { parseWhoxReply } from "../protocol/whox.ts";
 import * as numerics from "../protocol/numerics.ts";
@@ -209,7 +209,10 @@ export class Dispatcher {
     const channel = this.#store.channel(name);
     if (!channel) return null;
     const setBy = message.params[2] ?? null;
-    const unix = Number(message.params[3]);
+    // `Number("")` and `Number("  ")` are 0 (a false 1970 timestamp), so treat a
+    // missing/blank setat param as absent rather than the epoch.
+    const setAtRaw = message.params[3];
+    const unix = setAtRaw === undefined || setAtRaw.trim() === "" ? NaN : Number(setAtRaw);
     const candidate = Number.isFinite(unix) ? new Date(unix * 1000) : null;
     // Guard against an absurd timestamp (e.g. 1e300) producing an Invalid Date.
     const setAt = candidate !== null && !Number.isNaN(candidate.getTime()) ? candidate : null;
@@ -229,9 +232,12 @@ export class Dispatcher {
     // channel + members that nothing prunes (same rule as 366/topic/mode).
     const channel = this.#store.channel(name);
     if (!channel) return null;
+    // Build the status-prefix set once per 353 line, not once per token — a large
+    // channel's NAMES burst would otherwise allocate one Set per member.
+    const prefixSet = new Set(this.#store.server.isupport.prefixes.map((p) => p.prefix));
     for (const token of list.split(" ")) {
       if (token === "") continue;
-      const entry = this.#splitNamesEntry(token);
+      const entry = this.#splitNamesEntry(token, prefixSet);
       // Bound member growth: a 353 burst of distinct nicks must not grow the
       // member/user maps without bound. Skip new members past the cap (existing
       // ones still get their prefixes refreshed). Checked before creating the user.
@@ -257,8 +263,7 @@ export class Dispatcher {
     return event;
   }
 
-  #splitNamesEntry(token: string): NamesEntry {
-    const prefixSet = new Set(this.#store.server.isupport.prefixes.map((p) => p.prefix));
+  #splitNamesEntry(token: string, prefixSet: ReadonlySet<string>): NamesEntry {
     let i = 0;
     while (i < token.length && prefixSet.has(token[i]!)) i++;
     const prefixChars = token.slice(0, i);
@@ -732,8 +737,12 @@ export class Dispatcher {
     user.updateFromSource(source);
     const account = message.tags["account"] ?? null;
     if (account !== null) user.setAccount(account);
-    const isChannel = isChannelName(target, this.#store.server.isupport);
-    const channel = isChannel ? (this.#store.channel(target) ?? null) : null;
+    // A STATUSMSG target (e.g. `@#chan`) is an ops-wall, not a PM: strip the
+    // prefix, classify/lookup on the bare channel name, and record the prefix.
+    const isupport = this.#store.server.isupport;
+    const { statusPrefix, target: channelTarget } = splitStatusPrefix(target, isupport);
+    const isChannel = isChannelName(channelTarget, isupport);
+    const channel = isChannel ? (this.#store.channel(channelTarget) ?? null) : null;
     const member = channel?.members.get(source.name) ?? null;
 
     const actionText = parseActionText(text);
@@ -744,6 +753,7 @@ export class Dispatcher {
       target,
       isPrivate: !isChannel,
       account,
+      statusPrefix,
     };
     const event =
       actionText !== null
@@ -770,8 +780,10 @@ export class Dispatcher {
       user.updateFromSource(source);
       if (account !== null) user.setAccount(account);
     }
-    const isChannel = isChannelName(target, this.#store.server.isupport);
-    const channel = isChannel ? (this.#store.channel(target) ?? null) : null;
+    const isupport = this.#store.server.isupport;
+    const { statusPrefix, target: channelTarget } = splitStatusPrefix(target, isupport);
+    const isChannel = isChannelName(channelTarget, isupport);
+    const channel = isChannel ? (this.#store.channel(channelTarget) ?? null) : null;
     const member = user !== null ? (channel?.members.get(user.nick) ?? null) : null;
 
     const event = factory.noticeEvent(message, {
@@ -782,6 +794,7 @@ export class Dispatcher {
       text,
       isPrivate: !isChannel,
       account,
+      statusPrefix,
     });
     channel?.[EMIT](event);
     user?.[EMIT](event);

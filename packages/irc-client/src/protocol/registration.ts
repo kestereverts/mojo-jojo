@@ -119,6 +119,7 @@ export function register(
   let nickIndex = 0;
   let currentNick = options.nick;
   let capsConcluded = false;
+  let saslStarted = false;
   let saslSession: SaslSession | null = null;
   let saslSucceeded = false;
   let saslAccount: string | null = null;
@@ -154,6 +155,10 @@ export function register(
         concludeCaps();
         return;
       }
+      // A duplicate/unsolicited `CAP ACK` after `pending` has already drained
+      // must not restart SASL: a second `new SaslSession` would clobber the live
+      // exchange and re-send AUTHENTICATE, which the server rejects (904/906).
+      if (saslStarted) return;
       if (!caps.isEnabled("sasl")) {
         settle(() =>
           reject(
@@ -164,6 +169,7 @@ export function register(
         );
         return;
       }
+      saslStarted = true;
       saslSession = new SaslSession(mechanismFor(options.sasl));
       send(saslSession.start());
     };
@@ -295,13 +301,19 @@ export function register(
       }
     };
 
-    timer(timeoutMs)
-      .pipe(takeUntil(done$))
-      .subscribe(() =>
-        settle(() =>
-          reject(new RegistrationError(`registration timed out after ${timeoutMs}ms`)),
-        ),
-      );
+    // Only arm the timeout when it is finite and positive. `timer(Infinity)`
+    // (the documented "disable the timeout" value, mirroring connectTimeoutMs)
+    // and any value > 2**31-1 clamp to ~1ms in setTimeout, which would make every
+    // attempt time out almost instantly and loop reconnect forever.
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      timer(timeoutMs)
+        .pipe(takeUntil(done$))
+        .subscribe(() =>
+          settle(() =>
+            reject(new RegistrationError(`registration timed out after ${timeoutMs}ms`)),
+          ),
+        );
+    }
 
     messages$.pipe(takeUntil(done$)).subscribe({
       next: handle,

@@ -1,5 +1,5 @@
-import { isChannelName } from "@mojo-jojo/irc-client";
-import { safeSay } from "../command/reply.ts";
+import { isChannelName, parseMessage } from "@mojo-jojo/irc-client";
+import { safeClientCall, safeSay } from "../command/reply.ts";
 import type { CommandContext } from "../command/types.ts";
 import { Validator } from "../config/validate.ts";
 import { defineModule, type Module } from "../module/types.ts";
@@ -14,27 +14,33 @@ function restAfterFirst(argLine: string): string {
   return argLine.replace(/^\S+\s*/, "");
 }
 
-/** Run a client action, catching the synchronous send-throws (CRLF/over-length/full queue). */
+/**
+ * Run a client action via the shared {@link safeClientCall} guard (catches the
+ * synchronous send-throws), and tell the invoking owner when it didn't enqueue.
+ */
 function attempt(action: () => void, c: CommandContext, label: string): void {
-  try {
-    action();
-  } catch (error) {
-    c.log.warn(`${label} failed`, error);
+  if (!safeClientCall(action, c.log, label)) {
     c.reply(`${label} failed (bad argument?)`);
   }
 }
 
-/** Parse a raw IRC line: tokens, with everything after ` :` as a single trailing param. */
+/**
+ * Parse a raw IRC line with the canonical {@link parseMessage} grammar (the same
+ * one the rest of the stack uses), then reject anything that isn't a bare
+ * command-plus-params: `!raw` sends a command *from us*, so a tag or source
+ * prefix is not allowed. Returns `null` on a malformed or non-command line.
+ */
 function parseRawLine(line: string): { command: string; params: string[] } | null {
-  const colon = line.indexOf(" :");
-  const head = colon >= 0 ? line.slice(0, colon) : line;
-  const trailing = colon >= 0 ? line.slice(colon + 2) : undefined;
-  const tokens = head.split(/\s+/).filter((t) => t.length > 0);
-  const command = tokens.shift();
-  // Reject a source-/tag-prefixed token (`:`/`@`): a command word is never one.
-  if (!command || command.startsWith(":") || command.startsWith("@")) return null;
-  if (trailing !== undefined) tokens.push(trailing);
-  return { command, params: tokens };
+  let parsed;
+  try {
+    parsed = parseMessage(line.trim());
+  } catch {
+    return null;
+  }
+  if (parsed.command === "" || parsed.source !== null || Object.keys(parsed.tags).length > 0) {
+    return null;
+  }
+  return { command: parsed.command, params: [...parsed.params] };
 }
 
 /** Owner-only bot administration. */
@@ -136,6 +142,9 @@ export function adminModule(): Module<AdminConfig> {
           handler: (c) => {
             const parsed = parseRawLine(c.argLine);
             if (!parsed) return void c.reply("Usage: raw <command> [params...] [:trailing]");
+            // The client's send() re-serializes through the strict buildMessage,
+            // which rejects any structurally-injecting param — so a bad line is
+            // caught at the boundary, not silently reshaped.
             attempt(() => c.client.raw(parsed.command, ...parsed.params), c, "raw");
           },
         });

@@ -178,6 +178,15 @@ describe("dispatch — topic", () => {
     }
     expect(h.store.channel("#chan")?.topic).toBe("New topic");
   });
+
+  test("333 with a blank setat records null, not the 1970 epoch (T2)", () => {
+    const h = harness();
+    register(h);
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":irc 332 me #chan :The Topic");
+    h.feed(":irc 333 me #chan alice :");
+    expect(h.store.channel("#chan")!.topicSetAt).toBeNull();
+  });
 });
 
 describe("dispatch — NAMES", () => {
@@ -237,6 +246,24 @@ describe("dispatch — messages", () => {
       expect(event.text).toBe("hello");
       expect(event.isPrivate).toBe(false);
       expect(event.account).toBe("graceAcct");
+    }
+  });
+
+  test("STATUSMSG target (@#chan) is a channel message, not a PM (S1)", () => {
+    const h = harness();
+    register(h);
+    // Advertise STATUSMSG, then join and receive an ops-wall.
+    h.feed(":irc 005 me STATUSMSG=@+ :are supported");
+    h.feed(":me!u@h JOIN #chan");
+    h.feed(":grace!g@h JOIN #chan");
+    const event = h.feed(":grace!g@h PRIVMSG @#chan :ops only");
+    expect(event?.type).toBe("privmsg");
+    if (event?.type === "privmsg") {
+      expect(event.isPrivate).toBe(false);
+      expect(event.channel?.name).toBe("#chan");
+      expect(event.member?.nick).toBe("grace");
+      expect(event.statusPrefix).toBe("@");
+      expect(event.target).toBe("@#chan"); // raw target preserved
     }
   });
 

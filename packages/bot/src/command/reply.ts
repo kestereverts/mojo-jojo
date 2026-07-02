@@ -7,28 +7,29 @@ export function replyTarget(event: PrivmsgEvent): string {
 }
 
 /**
- * `client.say` wrapped so the synchronous send-throws (CR/LF/NUL injection,
- * over-512-byte line, full queue) never escape a handler. Returns `false` if the
- * send threw — which means "did not enqueue", NOT "delivered"; a send while
- * disconnected is a silent no-op that returns `true`.
+ * Run a client action (`say`/`notice`/`join`/`part`/`action`/`raw`/…), catching
+ * the synchronous send-throws every one of them can raise (CR/LF/NUL injection,
+ * over-512-byte line, full outbound queue). Returns `false` if the action threw
+ * — meaning "did not enqueue", NOT "delivered"; an action while disconnected is a
+ * silent no-op that returns `true`. This is the single guard every reply/action
+ * path funnels through, so a throw can never escape and kill a handler's stream.
  */
-export function safeSay(client: IrcClient, target: string, text: string, log: Logger): boolean {
+export function safeClientCall(action: () => void, log: Logger, label: string): boolean {
   try {
-    client.say(target, text);
+    action();
     return true;
   } catch (error) {
-    log.warn(`PRIVMSG to ${target} dropped`, error);
+    log.warn(`${label} dropped`, error);
     return false;
   }
 }
 
-/** {@link safeSay} for `client.notice`. */
+/** `client.say` wrapped via {@link safeClientCall}. */
+export function safeSay(client: IrcClient, target: string, text: string, log: Logger): boolean {
+  return safeClientCall(() => client.say(target, text), log, `PRIVMSG to ${target}`);
+}
+
+/** `client.notice` wrapped via {@link safeClientCall}. */
 export function safeNotice(client: IrcClient, target: string, text: string, log: Logger): boolean {
-  try {
-    client.notice(target, text);
-    return true;
-  } catch (error) {
-    log.warn(`NOTICE to ${target} dropped`, error);
-    return false;
-  }
+  return safeClientCall(() => client.notice(target, text), log, `NOTICE to ${target}`);
 }

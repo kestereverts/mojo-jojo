@@ -26,7 +26,9 @@ export class Parser {
   private readonly decoder = new TextDecoder();
 
   public parse(buffer: Uint8Array, tokens: readonly Token[]): Message {
-    const tags: Record<string, string> = {};
+    // Null-prototype so a tag literally named `__proto__` becomes an own
+    // property (a plain object would silently drop it / hand back the prototype).
+    const tags: Record<string, string> = Object.create(null);
     const params: string[] = [];
     let source: MutableSource | null = null;
     let command = "";
@@ -36,12 +38,14 @@ export class Parser {
     let tagValue = "";
     let clientPrefix = false;
 
+    // Always clear the pending value — a keyless `=value` (`@=v;a`) must not
+    // leak its value onto the following tag.
     const flushTag = (): void => {
       if (tagKey !== null) {
         tags[tagKey] = tagValue;
         tagKey = null;
-        tagValue = "";
       }
+      tagValue = "";
     };
 
     const decode = (token: Token): string =>
@@ -63,6 +67,9 @@ export class Parser {
           break;
         case TokenType.TagSeparator:
           flushTag();
+          // Reset the client-only flag: a `+` with an empty key (`@+;a`) emits
+          // no TagKey, so without this the '+' would leak onto the next key.
+          clientPrefix = false;
           break;
         case TokenType.PrefixStart:
           flushTag();
@@ -70,6 +77,11 @@ export class Parser {
           break;
         case TokenType.PrefixName:
           source!.name = decode(token);
+          break;
+        case TokenType.PrefixUserStart:
+          // An explicit '!' with an empty user (`nick!@host`): record the empty
+          // user so it round-trips; a following PrefixUser token overwrites it.
+          source!.user = "";
           break;
         case TokenType.PrefixUser:
           source!.user = decode(token);
@@ -90,8 +102,8 @@ export class Parser {
           // Params are literal decoded spans — never unescaped.
           params.push(decode(token));
           break;
-        // TagsStart, TagValueStart, PrefixUserStart, PrefixHostStart,
-        // TrailingParameterStart, EOF carry no content — nothing to do.
+        // TagsStart, TagValueStart, PrefixHostStart, TrailingParameterStart,
+        // EOF carry no content — nothing to do.
         default:
           break;
       }

@@ -29,10 +29,20 @@ export class Cooldowns {
     if (now < until) return false;
     if (!this.#until.has(key) && this.#until.size >= this.#maxEntries) {
       this.#pruneExpired(now);
-      // Hard bound: if every entry is still active, evict the oldest-inserted one.
+      // Hard bound: if every entry is still active, evict the one expiring
+      // SOONEST — not the oldest-inserted (which `Map.set` re-arm never reorders,
+      // so a hot key would be preferentially dropped). This way a flood of new
+      // keys can never evict a fresher/longer-lived cooldown and bypass the gate.
       if (this.#until.size >= this.#maxEntries) {
-        const oldest = this.#until.keys().next().value;
-        if (oldest !== undefined) this.#until.delete(oldest);
+        let soonestKey: string | undefined;
+        let soonestUntil = Infinity;
+        for (const [k, u] of this.#until) {
+          if (u < soonestUntil) {
+            soonestUntil = u;
+            soonestKey = k;
+          }
+        }
+        if (soonestKey !== undefined) this.#until.delete(soonestKey);
       }
     }
     this.#until.set(key, now + ms);

@@ -27,7 +27,7 @@ export class ConfigError extends Error {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -258,6 +258,12 @@ function validateModules(
   for (const [name, entryRaw] of Object.entries(rec)) {
     if (UNSAFE_KEYS.has(name)) {
       v.fail(`${path}.${name}`, "is a reserved key and not allowed");
+      continue;
+    }
+    // A ':' in a module name would let its namespaced cooldown/storage keys
+    // collide with structured keys elsewhere — reject it up front.
+    if (name.includes(":")) {
+      v.fail(`${path}.${name}`, "must not contain ':'");
       continue;
     }
     const entry = v.optRecord(entryRaw, `${path}.${name}`);

@@ -47,7 +47,9 @@ const FORBIDDEN = /[\r\n\x00]/;
 const FORBIDDEN_GLOBAL = /[\r\n\x00]/g;
 
 function byteLength(text: string): number {
-  return ENCODER.encode(text).length;
+  // Buffer.byteLength computes the UTF-8 length without allocating a byte array
+  // (unlike ENCODER.encode(text).length, which allocs a full copy per call).
+  return Buffer.byteLength(text, "utf8");
 }
 
 /** Truncate `text` to at most `maxBytes` UTF-8 bytes without splitting a codepoint. */
@@ -105,7 +107,15 @@ export class OutboundQueue {
       )
       .subscribe((line) => {
         this.#pending--;
-        this.#write(line);
+        // A faulted transport.write throwing here would escape the subscriber
+        // and become an async uncaughtException (process crash). Swallow it: the
+        // socket's own error/close path drives reconnect. (A deeper design could
+        // surface this to the connection's failAttempt handler.)
+        try {
+          this.#write(line);
+        } catch {
+          // transport faulted mid-drain — reconnect is handled by the transport
+        }
       });
   }
 
@@ -147,7 +157,10 @@ export class OutboundQueue {
    */
   sendImmediate(message: Message): void {
     if (this.#closed) return;
-    let body = buildMessage(message).replace(FORBIDDEN_GLOBAL, "");
+    // Lenient serialization (never throws): strip the injecting bytes and
+    // truncate ourselves rather than rejecting, so priority traffic is never
+    // blocked by a bad reason/token.
+    let body = buildMessage(message, { validate: false }).replace(FORBIDDEN_GLOBAL, "");
     if (byteLength(body) + 2 > MAX_LINE_BYTES) body = truncateToBytes(body, MAX_LINE_BYTES - 2);
     this.#write(body + "\r\n");
   }

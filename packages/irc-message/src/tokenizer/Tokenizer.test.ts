@@ -65,6 +65,18 @@ describe("Tokenizer limits", () => {
         new Tokenizer({ tagDataLimit: 5 }).tokenize(bytes("@k=ab CMD")),
       ).toThrow(/tagDataLimit/);
     });
+
+    // The limit must be enforced even when the message ENDS inside the tag
+    // section (no trailing space/command) — previously the EOF-accept ran before
+    // the limit check, so an over-limit tag section was wrongly accepted (C6).
+    test("the limit is enforced at end-of-input, not just before a command", () => {
+      expect(() =>
+        new Tokenizer({ tagDataLimit: 5 }).tokenize(bytes("@k=ab")),
+      ).not.toThrow();
+      expect(() =>
+        new Tokenizer({ tagDataLimit: 4 }).tokenize(bytes("@k=ab")),
+      ).toThrow(/tagDataLimit/);
+    });
   });
 
   describe("tagDataLimit default matches the spec (8191 bytes)", () => {

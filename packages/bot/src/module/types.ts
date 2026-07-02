@@ -68,6 +68,16 @@ export interface ModuleContext<C> {
   readonly storage: ModuleStorage;
   /** Register an arbitrary cleanup callback (run in reverse order on disposal). */
   onCleanup(fn: Disposer): void;
+
+  /**
+   * Run per-connection `setup` on every successful registration and its returned
+   * teardown on the following disconnect (and on module disposal). The host owns
+   * the reconnect-race handling — stale teardowns are cancelled before the next
+   * `setup` — so a module never has to hand-roll the lifecycle/timer dance to be
+   * reconnect-safe. Prefer this over subscribing `lifecycle$` directly for
+   * "do X while connected" work.
+   */
+  onEachConnection(setup: () => Disposer | void): void;
 }
 
 /**

@@ -99,10 +99,14 @@ export class BotEventHub {
   }
 
   off<T extends BotEvent["type"]>(type: T, handler: BotEventListener<T>): void {
-    const entry = this.#entries.find(
-      (e) => e.type === type && e.handler === (handler as (event: never) => void),
-    );
-    if (entry) this.#remove(entry);
+    // Remove EVERY matching registration (not just the first), matching the
+    // client-side EventFacade.off so the two façades behave identically when the
+    // same handler was registered more than once.
+    for (const entry of [...this.#entries]) {
+      if (entry.type === type && entry.handler === (handler as (event: never) => void)) {
+        this.#remove(entry);
+      }
+    }
   }
 
   /** Complete the stream (and detach every façade listener). Called on bot shutdown. */

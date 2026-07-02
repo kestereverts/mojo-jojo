@@ -1,4 +1,4 @@
-import { takeUntil } from "rxjs";
+import { safeClientCall } from "../command/reply.ts";
 import { Validator } from "../config/validate.ts";
 import { defineModule, type Module } from "../module/types.ts";
 
@@ -37,47 +37,34 @@ export function autojoinModule(): Module<AutojoinConfig> {
       if (channels.length === 0) return;
 
       const join = (channel: string): void => {
-        // join() can throw (e.g. a full outbound queue on a burst); best-effort.
-        try {
-          ctx.client.join(channel, keys[channel]);
-        } catch (error) {
-          ctx.log.warn(`autojoin ${channel} failed`, error);
-        }
+        // join() can throw (e.g. a full outbound queue on a burst); best-effort,
+        // via the shared guard so the throw never escapes.
+        safeClientCall(() => ctx.client.join(channel, keys[channel]), ctx.log, `autojoin ${channel}`);
       };
 
-      // One Set of pending timers (not one onCleanup per timer, which would leak
-      // across reconnects); cleared on each re-register so stale joins from a dropped
-      // connection can't fire, and on disposal.
-      const pending = new Set<ReturnType<typeof setTimeout>>();
-      const clearPending = (): void => {
-        for (const timer of pending) clearTimeout(timer);
-        pending.clear();
-      };
-      ctx.onCleanup(clearPending);
-
-      ctx.lifecycle$.pipe(takeUntil(ctx.destroyed$)).subscribe((event) => {
-        // Cancel stale joins the moment a connection drops, so a pending timer can't
-        // fire during the reconnect/pre-registration window.
-        if (event.type === "disconnected") {
-          clearPending();
-          return;
-        }
-        if (event.type === "registered") {
-          clearPending();
-          channels.forEach((channel, index) => {
-            if (delayMs > 0) {
-              // Stagger: channel N joins at (N+1)*delayMs after registration (so the
-              // first is delayed `delayMs`, each subsequent one `delayMs` later).
-              const timer = setTimeout(() => {
-                pending.delete(timer);
-                join(channel);
-              }, (index + 1) * delayMs);
-              pending.add(timer);
-            } else {
+      // Join on every registration, with a fresh timer set per connection. The
+      // host cancels this connection's teardown (below) on disconnect/dispose and
+      // before the next registration, so a stale staggered join can never fire
+      // during the reconnect window — no hand-rolled lifecycle handling needed.
+      ctx.onEachConnection(() => {
+        const pending = new Set<ReturnType<typeof setTimeout>>();
+        channels.forEach((channel, index) => {
+          if (delayMs > 0) {
+            // Stagger: channel N joins at (N+1)*delayMs after registration (so the
+            // first is delayed `delayMs`, each subsequent one `delayMs` later).
+            const timer = setTimeout(() => {
+              pending.delete(timer);
               join(channel);
-            }
-          });
-        }
+            }, (index + 1) * delayMs);
+            pending.add(timer);
+          } else {
+            join(channel);
+          }
+        });
+        return () => {
+          for (const timer of pending) clearTimeout(timer);
+          pending.clear();
+        };
       });
     },
   });

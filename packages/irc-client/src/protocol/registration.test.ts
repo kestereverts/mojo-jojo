@@ -32,7 +32,7 @@ function harness(overrides: Partial<RegistrationOptions> = {}): Harness {
   const result = register({ messages$, send: (m) => sent.push(m) }, options);
   return {
     sent,
-    lines: () => sent.map(buildMessage),
+    lines: () => sent.map((m) => buildMessage(m)),
     feed: (line) => messages$.next(parseMessage(line)),
     fail: (error) => messages$.error(error),
     end: () => messages$.complete(),
@@ -233,6 +233,33 @@ describe("register", () => {
     expect(h.lines()).toContain("CAP END");
     h.feed(":irc 001 mojo :Welcome");
     await h.result;
+  });
+
+  test("a duplicate CAP ACK after SASL has started does not restart it (R2)", async () => {
+    const h = harness({
+      desiredCaps: ["sasl"],
+      sasl: { mechanism: "PLAIN", username: "mojo", password: "hunter2" },
+    });
+    h.feed(":irc CAP * LS :sasl=PLAIN");
+    h.feed(":irc CAP mojo ACK :sasl");
+    expect(h.lines().filter((l) => l === "AUTHENTICATE PLAIN")).toHaveLength(1);
+    // A second, unsolicited ACK must not clobber the in-flight SaslSession.
+    h.feed(":irc CAP mojo ACK :sasl");
+    expect(h.lines().filter((l) => l === "AUTHENTICATE PLAIN")).toHaveLength(1);
+    // The original exchange still completes.
+    h.feed("AUTHENTICATE +");
+    h.feed(":irc 903 mojo :ok");
+    expect(h.lines()).toContain("CAP END");
+    h.feed(":irc 001 mojo :Welcome");
+    await h.result;
+  });
+
+  test("registrationTimeoutMs=Infinity disables the timeout (R1)", async () => {
+    const h = harness({ timeoutMs: Infinity });
+    // Under the bug, timer(Infinity) clamps to ~1ms and rejects before 001.
+    await new Promise((r) => setTimeout(r, 15));
+    h.feed(":irc 001 mojo :Welcome");
+    await h.result; // resolves — no spurious timeout fired
   });
 
   test("rejects on a SASL failure (904) and never sends CAP END", async () => {

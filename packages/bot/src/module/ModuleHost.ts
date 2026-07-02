@@ -103,7 +103,41 @@ export class ModuleHost<C = unknown> {
       isIgnored: (event) => this.#deps.ignore.has(event, this.#deps.caseMapper()),
       storage: this.#storage,
       onCleanup: (fn) => {
+        // Registered after dispose already ran its reverse loop: run it now
+        // rather than pushing it where it would never fire (a leaked timer/handle).
+        if (this.#disposed) {
+          void this.#runDisposer(fn);
+          return;
+        }
         this.#cleanups.push(fn);
+      },
+      onEachConnection: (setup) => {
+        let teardown: Disposer | void;
+        const runTeardown = (): void => {
+          const t = teardown;
+          teardown = undefined;
+          if (typeof t === "function") {
+            try {
+              void t();
+            } catch (error) {
+              log.error("onEachConnection teardown threw", error);
+            }
+          }
+        };
+        const sub = client.lifecycle$.subscribe((event) => {
+          if (event.type === "registered") {
+            runTeardown(); // cancel a prior connection's teardown before re-arming
+            try {
+              teardown = setup() ?? undefined;
+            } catch (error) {
+              log.error("onEachConnection setup threw", error);
+            }
+          } else if (event.type === "disconnected") {
+            runTeardown();
+          }
+        });
+        this.#subscriptions.add(sub);
+        this.#subscriptions.add(() => runTeardown()); // also run on module disposal
       },
     };
   }

@@ -36,7 +36,6 @@ describe("applyEnvOverrides", () => {
       [{ IRC_TLS: "true" }, true],
       [{ IRC_TLS: "0" }, false],
       [{ IRC_TLS: "false" }, false],
-      [{ IRC_TLS: "" }, false],
       [{ IRC_TLS_INSECURE: "1" }, { rejectUnauthorized: false }],
       [{ IRC_TLS: "1", IRC_TLS_INSECURE: "1" }, { rejectUnauthorized: false }],
       [{ IRC_TLS: "0", IRC_TLS_INSECURE: "1" }, false], // explicit plaintext wins
@@ -54,6 +53,10 @@ describe("applyEnvOverrides", () => {
     test("invalid boolean token throws", () => {
       expect(() => applyEnvOverrides({}, { IRC_TLS: "yes" })).toThrow(ConfigError);
     });
+
+    test("an empty IRC_TLS throws rather than silently downgrading to plaintext (B3)", () => {
+      expect(() => applyEnvOverrides({}, { IRC_TLS: "" })).toThrow(ConfigError);
+    });
   });
 
   describe("SASL", () => {
@@ -65,6 +68,19 @@ describe("applyEnvOverrides", () => {
     test("only one var set throws", () => {
       expect(() => applyEnvOverrides({}, { IRC_SASL_USER: "u" })).toThrow(ConfigError);
       expect(() => applyEnvOverrides({}, { IRC_SASL_PASS: "p" })).toThrow(ConfigError);
+    });
+
+    test("env PLAIN creds over a file EXTERNAL mechanism throw, not silently downgrade (B4)", () => {
+      const raw = { server: { sasl: { mechanism: "EXTERNAL" } } };
+      expect(() =>
+        applyEnvOverrides(raw, { IRC_SASL_USER: "u", IRC_SASL_PASS: "p" }),
+      ).toThrow(ConfigError);
+    });
+
+    test("env creds still fill in a file PLAIN block", () => {
+      const raw = { server: { sasl: { mechanism: "PLAIN", username: "old" } } };
+      const out = applyEnvOverrides(raw, { IRC_SASL_USER: "u", IRC_SASL_PASS: "p" });
+      expect(server(out).sasl).toEqual({ mechanism: "PLAIN", username: "u", password: "p" });
     });
   });
 

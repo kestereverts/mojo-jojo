@@ -48,7 +48,6 @@ import { whoxQuery } from "./protocol/whox.ts";
 import { capEvent } from "./events/factory.ts";
 import { retryWithBackoff, type BackoffDeps } from "./reconnect.ts";
 import { resolveOptions, type IrcClientOptions, type ResolvedOptions } from "./options.ts";
-import type { Transport } from "./transport/Transport.ts";
 import { EventFacade, type Unsubscribe } from "./entities/EventFacade.ts";
 import type { LifecycleEvent } from "./events/lifecycle.ts";
 import type { ClientEvent, IrcEvent, JoinEvent } from "./events/types.ts";
@@ -140,7 +139,6 @@ export class IrcClient {
   readonly #teardown = new Subject<void>();
 
   #connectionSub: Subscription | null = null;
-  #transport: Transport | null = null;
   #queue: OutboundQueue | null = null;
   #capabilities: CapabilityStore | null = null;
   /** Live connection state, rebuilt per attempt (fresh on each reconnect). */
@@ -289,7 +287,17 @@ export class IrcClient {
         filter((message) => message.command === "PING"),
         takeUntil(this.#teardown),
       )
-      .subscribe((message) => this.#queue?.sendImmediate(pong(message.params[0] ?? "")));
+      .subscribe((message) => {
+        // sendImmediate → transport.write can throw on a faulted socket; a throw
+        // escaping this bare subscriber becomes an async uncaughtException and
+        // crashes the process. Drop the PONG instead (the socket's own error
+        // path drives reconnect), mirroring the whoOnJoin/keepalive guards.
+        try {
+          this.#queue?.sendImmediate(pong(message.params[0] ?? ""));
+        } catch {
+          // faulted queue/socket — reconnect is handled elsewhere
+        }
+      });
 
     // Long-lived cap-notify handler: keep enabled/available caps current as
     // `CAP NEW`/`CAP DEL` (and post-`NEW` `ACK`s) arrive after registration.
@@ -298,7 +306,15 @@ export class IrcClient {
         filter((message) => message.command === "CAP"),
         takeUntil(this.#teardown),
       )
-      .subscribe((message) => this.#handleCapNotify(message));
+      .subscribe((message) => {
+        // #handleCapNotify issues sendImmediate(capReq(...)); guard the same way
+        // so a faulted write can't escape and crash the process.
+        try {
+          this.#handleCapNotify(message);
+        } catch {
+          // faulted queue/socket — reconnect is handled elsewhere
+        }
+      });
 
     // Optional WHO-on-join: backfill members already present on each channel we
     // join (whose `extended-join` we never saw) with one WHO/WHOX per self-join.
@@ -430,7 +446,11 @@ export class IrcClient {
     this.#connectionSub?.unsubscribe();
     this.#queue?.close();
     this.#queue = null;
-    this.#transport = null;
+    // Drop the dead connection's state so the getters (server/channels/users)
+    // honour their "current connection, or null" contract after quit() rather
+    // than handing back disposed entities.
+    this.#store = null;
+    this.#capabilities = null;
     // Drop facade listeners first (deterministic for leak tests), then complete
     // the source subjects — which also completes the merged #clientEvents stream.
     this.#facade.disposeListeners();
@@ -576,11 +596,18 @@ export class IrcClient {
         run();
       };
 
-      const timer = setTimeout(
-        () => finish(() => reject(new Error(`sendLabeled: timed out after ${timeoutMs}ms`))),
-        timeoutMs,
-      );
-      sub.add(() => clearTimeout(timer));
+      // Only arm the timeout when finite and positive — setTimeout clamps
+      // Infinity / values > 2**31-1 to ~1ms, which would reject almost instantly.
+      const timer =
+        Number.isFinite(timeoutMs) && timeoutMs > 0
+          ? setTimeout(
+              () => finish(() => reject(new Error(`sendLabeled: timed out after ${timeoutMs}ms`))),
+              timeoutMs,
+            )
+          : undefined;
+      sub.add(() => {
+        if (timer !== undefined) clearTimeout(timer);
+      });
 
       sub.add(
         this.#lifecycle
@@ -821,7 +848,6 @@ export class IrcClient {
     return new Observable<void>((subscriber) => {
       const attempt = ++this.#attemptCount;
       const transport = this.#options.transportFactory();
-      this.#transport = transport;
       // Every attempt (including a reconnect after an abnormal drop) is back in
       // the connecting phase: keep the public `state` honest rather than leaving
       // it on a stale "registered" while there is no usable connection.
@@ -942,11 +968,14 @@ export class IrcClient {
         // Only clear shared slots if they still belong to this attempt (a newer
         // attempt may already have replaced them).
         if (this.#queue === queue) this.#queue = null;
-        if (this.#transport === transport) this.#transport = null;
-        // Clear the negotiated caps on teardown too (drop/reconnect/quit), not
-        // just at the next attempt's start — otherwise `enabledCaps` reports the
-        // dead connection's caps during the backoff gap before the retry fires.
-        if (this.#store === store) this.#capabilities = null;
+        // Clear the negotiated caps AND the state store on teardown too
+        // (drop/reconnect/quit), not just at the next attempt's start — otherwise
+        // `enabledCaps` and the server/channels/users getters report the dead
+        // connection's caps/entities during the backoff gap before the retry fires.
+        if (this.#store === store) {
+          this.#capabilities = null;
+          this.#store = null;
+        }
         transport.close();
       };
     });

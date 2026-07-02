@@ -62,4 +62,29 @@ describe("EventFacade", () => {
     expect(() => unsub()).not.toThrow();
     expect(() => facade.disposeListeners()).not.toThrow();
   });
+
+  test("a throwing listener is routed to onListenerError, not re-raised (B6)", () => {
+    const subject = new Subject<Ping>();
+    const errors: unknown[] = [];
+    const facade = new EventFacade<Ping>(subject, (e) => errors.push(e));
+
+    facade.on("ping", () => {
+      throw new Error("boom-on");
+    });
+    const seen: number[] = [];
+    facade.on("ping", (e) => seen.push(e.n)); // a sibling that must still fire
+
+    // Without the guard the throw becomes an RxJS async uncaughtException.
+    expect(() => subject.next({ type: "ping", n: 1 })).not.toThrow();
+    expect(seen).toEqual([1]); // sibling still ran despite the sibling throw
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as Error).message).toBe("boom-on");
+
+    // once() is guarded too.
+    facade.once("ping", () => {
+      throw new Error("boom-once");
+    });
+    expect(() => subject.next({ type: "ping", n: 2 })).not.toThrow();
+    expect((errors.at(-1) as Error).message).toBe("boom-once");
+  });
 });

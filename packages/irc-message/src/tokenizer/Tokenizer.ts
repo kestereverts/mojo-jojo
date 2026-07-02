@@ -105,21 +105,23 @@ export class Tokenizer {
           if (buffer[pos] === CHAR_PLUS) {
             tokens.push(new TagClientKeyStart(pos))
             pos++
-            if (pos >= end) return eof(tokens, pos)
+            // Enforce the limit before accepting at EOF, or a boundary-length
+            // tag section that ends the message is wrongly accepted.
             if (pos > tagDataLimitPos) {
               throw new LimitExceededError('tagDataLimit', tagDataLimit, pos, last(tokens))
             }
+            if (pos >= end) return eof(tokens, pos)
           }
           const tokenStart = pos
           if (isTagKeyChar(buffer[pos]!)) {
             pos++
             for (;; pos++) {
+              if (pos > tagDataLimitPos) {
+                throw new LimitExceededError('tagDataLimit', tagDataLimit, pos, last(tokens))
+              }
               if (pos >= end) {
                 tokens.push(new TagKey(tokenStart, pos))
                 return eof(tokens, pos)
-              }
-              if (pos > tagDataLimitPos) {
-                throw new LimitExceededError('tagDataLimit', tagDataLimit, pos, last(tokens))
               }
               if (!isTagKeyChar(buffer[pos]!)) break
             }
@@ -131,12 +133,12 @@ export class Tokenizer {
         if (buffer[pos] === CHAR_EQUALS) {
           tokens.push(new TagValueStart(pos))
           pos++
+          if (pos > tagDataLimitPos) {
+            throw new LimitExceededError('tagDataLimit', tagDataLimit, pos, last(tokens))
+          }
           if (pos >= end) {
             tokens.push(new TagValue(pos, pos))
             return eof(tokens, pos)
-          }
-          if (pos > tagDataLimitPos) {
-            throw new LimitExceededError('tagDataLimit', tagDataLimit, pos, last(tokens))
           }
           // TagValue
           {
@@ -144,12 +146,12 @@ export class Tokenizer {
             if (isTagValueChar(buffer[pos]!)) {
               pos++
               for (;; pos++) {
+                if (pos > tagDataLimitPos) {
+                  throw new LimitExceededError('tagDataLimit', tagDataLimit, pos, last(tokens))
+                }
                 if (pos >= end) {
                   tokens.push(new TagValue(tokenStart, pos))
                   return eof(tokens, pos)
-                }
-                if (pos > tagDataLimitPos) {
-                  throw new LimitExceededError('tagDataLimit', tagDataLimit, pos, last(tokens))
                 }
 
                 if (!isTagValueChar(buffer[pos]!)) break

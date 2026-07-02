@@ -83,8 +83,11 @@ function matchesMask(event: PrivmsgEvent, mask: string, caseMapper: CaseMapper |
   const foldNick = (s: string): string => (caseMapper ? caseMapper.normalize(s) : s.toLowerCase());
   const bang = mask.indexOf("!");
   if (bang < 0) {
-    // No nick separator: ASCII-fold and glob the whole hostmask.
-    return globMatch(mask.toLowerCase(), `${nick}!${username}@${host}`.toLowerCase());
+    // No nick separator: fold the whole hostmask under the server CASEMAPPING
+    // (both sides identically), NOT plain ASCII — otherwise a no-bang mask like
+    // `evil[]*` would fail to match the casemapping-equivalent nick `evil{}` on an
+    // rfc1459 network, letting a sender evade an ignore/owner mask.
+    return globMatch(foldNick(mask), foldNick(`${nick}!${username}@${host}`));
   }
   // Fold the NICK part under the server CASEMAPPING (so `a{b}` matches `a[b]` on
   // rfc1459); the user@host part stays ASCII case-insensitive.

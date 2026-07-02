@@ -17,6 +17,11 @@ export type Unsubscribe = () => void;
 /** Shared no-op unsubscribe for listeners that were never tracked. */
 const NOOP: Unsubscribe = () => {};
 
+/** Default listener-error sink: log, never rethrow (a throw would crash the process). */
+const DEFAULT_ON_LISTENER_ERROR = (error: unknown): void => {
+  console.error("EventFacade: listener threw", error);
+};
+
 interface Listener {
   readonly type: string;
   readonly handler: (event: never) => void;
@@ -26,17 +31,29 @@ interface Listener {
 export class EventFacade<E extends { type: string }> {
   readonly #source: Observable<E>;
   readonly #listeners: Listener[] = [];
+  readonly #onListenerError: (error: unknown) => void;
 
-  constructor(source: Observable<E>) {
+  constructor(source: Observable<E>, onListenerError: (error: unknown) => void = DEFAULT_ON_LISTENER_ERROR) {
     this.#source = source;
+    this.#onListenerError = onListenerError;
   }
 
   /**
    * Subscribe to one event `type`. Returns an unsubscribe function; the handler
    * is also removable via {@link off}.
+   *
+   * A throwing handler is caught and routed to `onListenerError` (default: log).
+   * An unguarded throw here would be re-raised by RxJS as an async
+   * `uncaughtException` and crash the process.
    */
   on<T extends E["type"]>(type: T, handler: (event: Extract<E, { type: T }>) => void): Unsubscribe {
-    const sub = this.stream(type).subscribe(handler);
+    const sub = this.stream(type).subscribe((event) => {
+      try {
+        handler(event);
+      } catch (error) {
+        this.#onListenerError(error);
+      }
+    });
     // If the source had already completed/errored (e.g. `client.on(...)` after
     // `quit()`, or a synchronous/replaying source), the subscription is already
     // closed: there is nothing left to deliver or unsubscribe, so don't retain a
@@ -59,7 +76,11 @@ export class EventFacade<E extends { type: string }> {
       .subscribe((event) => {
         fired = true;
         if (listener) this.#remove(listener);
-        handler(event);
+        try {
+          handler(event);
+        } catch (error) {
+          this.#onListenerError(error);
+        }
       });
     // A synchronous/replaying source can fire (and `take(1)` then complete)
     // before this line runs, leaving `listener` undefined inside the callback —

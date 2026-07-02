@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { buildMessage } from "./build.ts";
+import { buildMessage, isValidTagKey } from "./build.ts";
 import type { Message } from "./types.ts";
 
 /** Build a Message from partial fields over sensible empty defaults. */
@@ -78,5 +78,93 @@ describe("buildMessage", () => {
     expect(
       buildMessage(msg({ tags: { id: "1 2;3", novalue: "" }, command: "PING" })),
     ).toBe("@id=1\\s2\\:3;novalue PING");
+  });
+
+  // A middle param that is empty / contains a space / begins with ':' cannot be
+  // represented as a middle param — serializing it verbatim would inject or
+  // swallow params on the wire, so buildMessage rejects it (C1).
+  describe("rejects structurally-invalid params (C1)", () => {
+    test("non-final param containing a space", () => {
+      expect(() =>
+        buildMessage(msg({ command: "CMD", params: ["a b", "c"] })),
+      ).toThrow(/non-final param/);
+    });
+
+    test("empty non-final param", () => {
+      expect(() =>
+        buildMessage(msg({ command: "CMD", params: ["", "c"] })),
+      ).toThrow(/non-final param/);
+    });
+
+    test("non-final param starting with ':'", () => {
+      expect(() =>
+        buildMessage(msg({ command: "CMD", params: [":x", "c"] })),
+      ).toThrow(/non-final param/);
+    });
+
+    test("param containing CR/LF/NUL", () => {
+      expect(() =>
+        buildMessage(msg({ command: "CMD", params: ["#c", "a\r\nQUIT"] })),
+      ).toThrow(/CR, LF, or NUL/);
+    });
+  });
+
+  // Only tag values are escaped on the wire; a key outside the tag-key grammar
+  // would corrupt the tag-list framing, so buildMessage rejects it (C2).
+  describe("rejects invalid tag keys (C2)", () => {
+    test("key containing ';'", () => {
+      expect(() =>
+        buildMessage(msg({ tags: { "a;b": "1" }, command: "PING" })),
+      ).toThrow(/invalid tag key/);
+    });
+
+    test("key containing a space", () => {
+      expect(() =>
+        buildMessage(msg({ tags: { "a b": "1" }, command: "PING" })),
+      ).toThrow(/invalid tag key/);
+    });
+
+    test("key containing '='", () => {
+      expect(() =>
+        buildMessage(msg({ tags: { "a=b": "1" }, command: "PING" })),
+      ).toThrow(/invalid tag key/);
+    });
+
+    test("accepts a well-formed client/vendor key", () => {
+      expect(
+        buildMessage(msg({ tags: { "+example.com/foo": "1" }, command: "PING" })),
+      ).toBe("@+example.com/foo=1 PING");
+    });
+  });
+
+  test("rejects an empty or space-bearing command", () => {
+    expect(() => buildMessage(msg({ command: "" }))).toThrow(/invalid command/);
+    expect(() => buildMessage(msg({ command: "A B" }))).toThrow(/invalid command/);
+  });
+
+  // An empty prefix user (`nick!@host`) round-trips: source.user === "" and the
+  // builder re-emits the '!' (C8).
+  test("round-trips an empty prefix user", () => {
+    expect(
+      buildMessage(
+        msg({ source: { name: "nick", user: "", host: "host" }, command: "CMD" }),
+      ),
+    ).toBe(":nick!@host CMD");
+  });
+});
+
+describe("isValidTagKey", () => {
+  test("accepts plain, vendor, and client keys", () => {
+    expect(isValidTagKey("time")).toBe(true);
+    expect(isValidTagKey("example.com/foo")).toBe(true);
+    expect(isValidTagKey("+example.com/foo")).toBe(true);
+    expect(isValidTagKey("draft-01")).toBe(true);
+  });
+
+  test("rejects framing-breaking keys", () => {
+    expect(isValidTagKey("a;b")).toBe(false);
+    expect(isValidTagKey("a=b")).toBe(false);
+    expect(isValidTagKey("a b")).toBe(false);
+    expect(isValidTagKey("")).toBe(false);
   });
 });

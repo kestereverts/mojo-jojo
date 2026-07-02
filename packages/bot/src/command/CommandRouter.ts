@@ -11,6 +11,7 @@ import { checkPermission } from "./permissions.ts";
 import { parseCommandLine } from "./parse.ts";
 import { replyTarget, safeNotice, safeSay } from "./reply.ts";
 import type { Command, CommandContext } from "./types.ts";
+import { asError } from "../util/errors.ts";
 
 const DEFAULT_CONCURRENCY = 8;
 const DEFAULT_HANDLER_TIMEOUT_MS = 30_000;
@@ -45,10 +46,6 @@ interface Prepared {
   readonly controller: AbortController;
 }
 
-function asError(value: unknown): Error {
-  return value instanceof Error ? value : new Error(String(value));
-}
-
 /**
  * Owns the command table and the bot's single, bounded PRIVMSG pipeline.
  *
@@ -61,7 +58,6 @@ function asError(value: unknown): Error {
 export class CommandRouter {
   readonly #deps: CommandRouterDeps;
   readonly #byName = new Map<string, CommandEntry>();
-  readonly #commands = new Set<Command>();
   readonly #destroyed$ = new Subject<void>();
   readonly #maxConcurrency: number;
   #inFlight = 0;
@@ -116,25 +112,22 @@ export class CommandRouter {
     }
     const entry: CommandEntry = { command, module };
     for (const name of names) this.#byName.set(name, entry);
-    this.#commands.add(command);
     return () => {
       for (const name of names) {
         if (this.#byName.get(name) === entry) this.#byName.delete(name);
       }
-      this.#commands.delete(command);
     };
   }
 
-  /** All registered commands (distinct, no alias duplicates). */
+  /** All registered commands (distinct, no alias duplicates) — derived from the name map. */
   list(): readonly Command[] {
-    return [...this.#commands];
+    return [...new Set([...this.#byName.values()].map((e) => e.command))];
   }
 
   dispose(): void {
     this.#destroyed$.next();
     this.#destroyed$.complete();
     this.#byName.clear();
-    this.#commands.clear();
   }
 
   /**
@@ -197,15 +190,19 @@ export class CommandRouter {
       return EMPTY;
     }
 
+    // Resolve the sender identity key once (account/hostmask fold is non-trivial)
+    // and reuse it for both the rate limiter and the cooldown.
+    const userKey = this.#userKey(event);
+
     // Per-sender command rate limit, applied to ALL commands (independent of cooldownMs),
     // so one user can't keep the bot at its max output rate network-wide.
-    if (this.#deps.rateLimiter && !this.#deps.rateLimiter.tryConsume(this.#userKey(event))) {
+    if (this.#deps.rateLimiter && !this.#deps.rateLimiter.tryConsume(userKey)) {
       this.#deps.events.emit({ type: "commandDenied", command: command.name, reason: "ratelimited", event });
       return EMPTY;
     }
 
     if (command.cooldownMs && command.cooldownMs > 0) {
-      const key = `cmd:${command.name}:${this.#userKey(event)}`;
+      const key = `cmd:${command.name}:${userKey}`;
       if (!this.#deps.cooldowns.check(key, command.cooldownMs)) {
         this.#deps.events.emit({ type: "commandDenied", command: command.name, reason: "cooldown", event });
         return EMPTY;

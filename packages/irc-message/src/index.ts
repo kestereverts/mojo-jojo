@@ -4,7 +4,7 @@ export type { Message, Source, Tags } from "./types.ts";
 // High-level pipeline
 export { parseMessage } from "./parse.ts";
 export type { ParseOptions, SyncBackend } from "./parse.ts";
-export { buildMessage } from "./build.ts";
+export { buildMessage, isValidTagKey } from "./build.ts";
 
 // Backend switching (incl. async WASM backends)
 export { createIrcParser } from "./backends.ts";

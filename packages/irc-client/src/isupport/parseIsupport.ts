@@ -46,6 +46,12 @@ export interface ISupport {
   readonly chanModes: ChanModes;
   /** Channel-type sigils, e.g. `#&`. */
   readonly chanTypes: string;
+  /**
+   * STATUSMSG prefixes the server accepts as targets (e.g. `@+`): a PRIVMSG to
+   * `@#chan` addresses only the ops. Empty when unadvertised. Used to strip the
+   * prefix before channel classification so an ops-wall isn't mistaken for a PM.
+   */
+  readonly statusMsg: string;
   /** Active casemapping (default `rfc1459`). */
   readonly caseMapping: CaseMapping;
   /** Network name, or `null` if not advertised. */
@@ -86,6 +92,7 @@ export const EMPTY_ISUPPORT: ISupport = {
   network: null,
   modesPerLine: null,
   whox: false,
+  statusMsg: "",
   raw: {},
 };
 
@@ -184,6 +191,7 @@ function deriveISupport(raw: Record<string, string | true>): ISupport {
     network: typeof network === "string" && network !== "" ? network : null,
     modesPerLine,
     whox: raw["WHOX"] !== undefined, // advertised as a bare token (no value)
+    statusMsg: typeof raw["STATUSMSG"] === "string" ? raw["STATUSMSG"] : "",
     raw,
   };
 }
@@ -191,6 +199,22 @@ function deriveISupport(raw: Record<string, string | true>): ISupport {
 /** True when `name` begins with one of the server's channel-type sigils. */
 export function isChannelName(name: string, isupport: ISupport): boolean {
   return name.length > 0 && isupport.chanTypes.includes(name[0]!);
+}
+
+/**
+ * Strip a leading STATUSMSG prefix (e.g. `@` in `@#chan`) from a PRIVMSG/NOTICE
+ * target. Returns the prefix that was stripped (`""` if none) and the bare
+ * target, so the caller can classify the real channel name and still record that
+ * the message was addressed to a status subset.
+ */
+export function splitStatusPrefix(
+  target: string,
+  isupport: ISupport,
+): { statusPrefix: string; target: string } {
+  if (target.length > 0 && isupport.statusMsg.includes(target[0]!)) {
+    return { statusPrefix: target[0]!, target: target.slice(1) };
+  }
+  return { statusPrefix: "", target };
 }
 
 /** Map a status prefix character (e.g. `@`) to its mode letter (e.g. `o`). */

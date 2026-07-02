@@ -57,6 +57,10 @@ export class ConsoleLogger implements Logger {
   #write(level: Exclude<LogLevel, "silent">, message: string, args: readonly unknown[]): void {
     if (RANK[level] < RANK[this.#level]) return;
     const line = this.#scope ? `[${this.#scope}] ${message}` : message;
-    this.#sink[level](line, ...args);
+    // Neutralize printf specifiers in the (attacker-influenceable) message so a
+    // `%s`/`%o` in a nick/channel can't consume the trailing `args` (e.g. the
+    // Error) and spoof/garble the line. The message is literal text; `args` are
+    // logged alongside it. console renders the escaped `%%` back to `%`.
+    this.#sink[level](line.replace(/%/g, "%%"), ...args);
   }
 }

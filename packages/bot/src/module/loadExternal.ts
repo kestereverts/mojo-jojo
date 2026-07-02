@@ -1,5 +1,6 @@
 import { resolveExternalSpecifier } from "../config/resolveExternal.ts";
 import { isModule, type Module } from "./types.ts";
+import { errorMessage } from "../util/errors.ts";
 
 interface PickResult {
   module?: Module<unknown>;
@@ -67,15 +68,13 @@ export async function loadExternalModule(
   try {
     imported = await import(resolved);
   } catch (cause) {
-    const detail = cause instanceof Error ? cause.message : String(cause);
-    throw new Error(`failed to import external module "${specifier}": ${detail}`);
+    throw new Error(`failed to import external module "${specifier}": ${errorMessage(cause)}`);
   }
 
   const { module, factoryError } = pickModule(imported);
   if (module) return module;
   if (factoryError !== undefined) {
-    const detail = factoryError instanceof Error ? factoryError.message : String(factoryError);
-    throw new Error(`external module "${specifier}" factory threw: ${detail}`);
+    throw new Error(`external module "${specifier}" factory threw: ${errorMessage(factoryError)}`);
   }
   throw new Error(
     `external module "${specifier}" does not export a valid Module ` +

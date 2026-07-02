@@ -22,6 +22,7 @@ import { loadExternalModule } from "./module/loadExternal.ts";
 import { ModuleHost, type ModuleHostDeps } from "./module/ModuleHost.ts";
 import type { BotApi, Module } from "./module/types.ts";
 import { builtinModules } from "./modules/index.ts";
+import { asError } from "./util/errors.ts";
 
 /** Injectable dependencies (test seams). */
 export interface BotDeps {
@@ -36,10 +37,6 @@ export interface BotDeps {
 
 const DEFAULT_QUIT_FLUSH_MS = 250;
 const QUIT_WAIT_MS = 2000;
-
-function asError(value: unknown): Error {
-  return value instanceof Error ? value : new Error(String(value));
-}
 
 /**
  * The bot runtime: one {@link IrcClient} plus a set of modules loaded from config.
@@ -59,6 +56,11 @@ export class Bot {
   readonly #events: BotEventHub;
   readonly #registry: ModuleRegistry;
   readonly #cooldowns = new Cooldowns();
+  // Modules get their OWN cooldown table, separate from the router's, so a
+  // module's `ctx.cooldown` keys (`<name>:<key>`) can never collide with the
+  // router's `cmd:`/`cmdctx:`/`log:` keys, and a module flood can't evict the
+  // router's cooldowns (or vice versa).
+  readonly #moduleCooldowns = new Cooldowns();
   readonly #ignore: IgnoreList;
   readonly #router: CommandRouter;
   readonly #hosts: ModuleHost[] = [];
@@ -184,8 +186,15 @@ export class Bot {
     // Listing a module in `externalModules` registers AND enables it (its
     // `[modules.<name>]` table, if any, supplies options or an `enabled = false` override).
     const externalNames = new Set<string>();
-    for (const specifier of this.#config.externalModules) {
-      const mod = await loadExternalModule(specifier, this.#config.configDir);
+    // Import independent modules concurrently (each is disk I/O + transpile), then
+    // register in the configured order so registration stays deterministic and
+    // fail-fast. Promise.all rejects on the first failure, preserving fail-fast.
+    const loaded = await Promise.all(
+      this.#config.externalModules.map((specifier) =>
+        loadExternalModule(specifier, this.#config.configDir),
+      ),
+    );
+    for (const mod of loaded) {
       this.#registry.register(mod.name, () => mod);
       externalNames.add(mod.name);
     }
@@ -242,7 +251,7 @@ export class Bot {
       client: this.#client,
       log: this.#log.child(name),
       bot: this.#botApi,
-      cooldowns: this.#cooldowns,
+      cooldowns: this.#moduleCooldowns,
       ignore: this.#ignore,
       caseMapper: () => this.#client.server?.caseMapper ?? null,
       registerCommand: (command, module) => this.#router.add(command, module),

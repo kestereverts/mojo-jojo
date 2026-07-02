@@ -148,21 +148,23 @@ export class JsFastTokenizer {
           if (buffer[pos] === CHAR_PLUS) {
             emit(T_TagClientKeyStart, pos, pos + 1);
             pos++;
-            if (pos >= end) return finish(pos);
+            // Enforce the limit before accepting at EOF, or a boundary-length
+            // tag section that ends the message is wrongly accepted.
             if (pos > tagDataLimitPos) {
               throw new LimitExceededError("tagDataLimit", tagDataLimit, pos, lastTok());
             }
+            if (pos >= end) return finish(pos);
           }
           const tokenStart = pos;
           if (isTagKeyChar(buffer[pos]!)) {
             pos++;
             for (;; pos++) {
+              if (pos > tagDataLimitPos) {
+                throw new LimitExceededError("tagDataLimit", tagDataLimit, pos, lastTok());
+              }
               if (pos >= end) {
                 emit(T_TagKey, tokenStart, pos);
                 return finish(pos);
-              }
-              if (pos > tagDataLimitPos) {
-                throw new LimitExceededError("tagDataLimit", tagDataLimit, pos, lastTok());
               }
               if (!isTagKeyChar(buffer[pos]!)) break;
             }
@@ -174,12 +176,12 @@ export class JsFastTokenizer {
         if (buffer[pos] === CHAR_EQUALS) {
           emit(T_TagValueStart, pos, pos + 1);
           pos++;
+          if (pos > tagDataLimitPos) {
+            throw new LimitExceededError("tagDataLimit", tagDataLimit, pos, lastTok());
+          }
           if (pos >= end) {
             emit(T_TagValue, pos, pos);
             return finish(pos);
-          }
-          if (pos > tagDataLimitPos) {
-            throw new LimitExceededError("tagDataLimit", tagDataLimit, pos, lastTok());
           }
           // TagValue
           {
@@ -187,12 +189,12 @@ export class JsFastTokenizer {
             if (isTagValueChar(buffer[pos]!)) {
               pos++;
               for (;; pos++) {
+                if (pos > tagDataLimitPos) {
+                  throw new LimitExceededError("tagDataLimit", tagDataLimit, pos, lastTok());
+                }
                 if (pos >= end) {
                   emit(T_TagValue, tokenStart, pos);
                   return finish(pos);
-                }
-                if (pos > tagDataLimitPos) {
-                  throw new LimitExceededError("tagDataLimit", tagDataLimit, pos, lastTok());
                 }
                 if (!isTagValueChar(buffer[pos]!)) break;
               }

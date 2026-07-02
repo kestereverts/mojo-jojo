@@ -128,6 +128,16 @@ describe("IrcClient", () => {
     expect(events.some((e) => e.type === "disconnected" && e.local === true)).toBe(true);
   });
 
+  test("after quit() the state getters return null, not the dead connection (L1)", async () => {
+    const { client } = await registerClient();
+    expect(client.server).not.toBeNull(); // live before quit
+    client.quit();
+    expect(client.server).toBeNull();
+    expect(client.channels).toBeUndefined();
+    expect(client.users).toBeUndefined();
+    expect(client.channel("#anything")).toBeUndefined();
+  });
+
   test("quit() still shuts down when the QUIT write throws", async () => {
     class ThrowOnQuit extends MockTransport {
       override write(data: Uint8Array | string): void {

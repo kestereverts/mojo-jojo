@@ -1,6 +1,16 @@
 import { Subject, type Observable } from "rxjs";
 import { TransportClosedError, type Transport, type TransportClose } from "./Transport.ts";
 
+const ENCODER = new TextEncoder();
+
+/** Concatenate two byte chunks into a fresh buffer. */
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out;
+}
+
 /**
  * The subset of `Bun.connect` that {@link BunSocketTransport} needs. Injectable
  * via {@link BunSocketTransportOptions.connector} so the socket-callback → stream
@@ -41,6 +51,8 @@ export class BunSocketTransport implements Transport {
   #socket: Bun.Socket | null = null;
   #closing = false;
   #settled = false;
+  /** Bytes accepted by {@link write} but not yet written (TCP backpressure); flushed on `drain`. */
+  #pendingWrite: Uint8Array | null = null;
 
   readonly bytes$: Observable<Uint8Array> = this.#bytes.asObservable();
   readonly closed$: Observable<TransportClose> = this.#closed.asObservable();
@@ -77,6 +89,11 @@ export class BunSocketTransport implements Transport {
         socket: {
           data: (_socket, data) => {
             this.#bytes.next(data);
+          },
+          // The kernel/TLS send buffer drained: flush any bytes that a previous
+          // write() couldn't hand off, in order, before new writes.
+          drain: (socket) => {
+            this.#flushPending(socket);
           },
           // TLS only: the connection is writable once the handshake succeeds.
           handshake: (_socket, success, verifyError) => {
@@ -131,12 +148,44 @@ export class BunSocketTransport implements Transport {
   write(data: Uint8Array | string): void {
     const socket = this.#socket;
     if (!socket) throw new Error("BunSocketTransport: write before connect");
-    socket.write(data);
+    if (this.#pendingWrite !== null) {
+      // Already backpressured — queue behind the pending bytes so the wire order
+      // is preserved; the `drain` callback flushes them.
+      const bytes = typeof data === "string" ? ENCODER.encode(data) : data;
+      this.#pendingWrite = concatBytes(this.#pendingWrite, bytes);
+      return;
+    }
+    // Bun's socket.write returns the number of bytes actually accepted; under a
+    // full send buffer the tail is NOT auto-buffered, so hold the remainder and
+    // resume on `drain` rather than silently dropping it (which would corrupt
+    // the wire stream by concatenating the next line onto a truncated one).
+    const n = socket.write(data);
+    const total = typeof data === "string" ? Buffer.byteLength(data) : data.length;
+    if (n < total) {
+      const bytes = typeof data === "string" ? ENCODER.encode(data) : data;
+      this.#pendingWrite = bytes.slice(n);
+    }
+  }
+
+  #flushPending(socket: Bun.Socket): void {
+    if (this.#pendingWrite === null) return;
+    const n = socket.write(this.#pendingWrite);
+    this.#pendingWrite = n >= this.#pendingWrite.length ? null : this.#pendingWrite.slice(n);
   }
 
   close(): void {
+    if (this.#closing) return;
     this.#closing = true;
-    this.#socket?.end();
+    if (this.#socket) {
+      this.#socket.end();
+    } else {
+      // Never connected (or the connector is still pending): there is no socket
+      // to end, so settle now — otherwise closed$ never emits and bytes$ never
+      // completes, and a consumer awaiting closed$ hangs forever. If a connect
+      // is in flight, connect()'s `#closing` check still ends the socket later;
+      // #settle's guard makes that a no-op.
+      this.#settle({ local: true });
+    }
   }
 
   #settle(close: TransportClose): void {

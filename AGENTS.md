@@ -3,7 +3,7 @@
 - This is a Bun workspace repo, not Node/npm. Use Bun 1.3.x; `.tool-versions` pins `bun 1.3.14` and `package.json` sets `packageManager` to `bun@1.3.14`.
 - Workspaces are `apps/*` and `packages/*`. Implemented workspaces are `@mojo-jojo/app`, `@mojo-jojo/irc-message`, `@mojo-jojo/irc-client`, and `@mojo-jojo/bot`.
 - `apps/app/index.ts` is the runnable bot: it `loadConfig()`s `apps/app/config.toml` and starts a `Bot`. `config.example.toml` is the annotated template; secrets come from env, not the file.
-- `packages/irc-message` is the raw IRCv3 line parser/serializer; `packages/irc-client` is the RxJS-first IRC client built on it; `packages/bot` is the modular bot framework built on the client. All export from `src/index.ts`.
+- `packages/irc-message` is the raw IRCv3 line parser/serializer; `packages/irc-client` is the RxJS-first IRC client built on it; `packages/bot` is the modular bot framework built on the client. Each package's public API is `src/index.ts` (`@mojo-jojo/bot` additionally ships the built-in modules under the `@mojo-jojo/bot/modules` subpath export).
 - `CLAUDE.md` only delegates to this file with `@AGENTS.md`; keep repo guidance here.
 
 ## Commands
@@ -45,7 +45,7 @@
 ## IRC Bot Package
 
 - `packages/bot` (`@mojo-jojo/bot`) is the modular bot framework on top of `irc-client`. A `Bot` is one `IrcClient` plus modules loaded from a TOML config; it is RxJS-first internally and exposes its own events as both `events$` and an `on()/once()/off()` façade.
-- Config: `loadConfig()` parses TOML (`Bun.TOML.parse`), merges env overrides (env wins for secrets), and validates with the zero-dep `Validator` (collect-all-errors). Secrets (`IRC_PASSWORD`, `IRC_SASL_*`) come from env, never the file. `ServerConfig` maps to `IrcClientOptions`.
+- Config: `loadConfig()` parses TOML (`Bun.TOML.parse`), strips prototype-polluting keys, merges env overrides (env wins for secrets), and validates with the zero-dep `Validator` (collect-all-errors). Secrets (`IRC_PASSWORD`, `IRC_SASL_*`) should come from env; an in-file `server.password` / `[server.sasl]` password is supported but discouraged and is overridden by the env vars. An env `IRC_SASL_*` that conflicts with a file `mechanism` (e.g. EXTERNAL) is a hard error, not a silent downgrade. `ServerConfig` maps to `IrcClientOptions`.
 - Modules are factories returning a `Module` (`name`, optional `parseConfig`, `setup(ctx)`). `setup` gets a `ModuleContext`: the client, RxJS streams, `destroyed$`, `track()`, `command()`, `cooldown`/`isIgnored`, namespaced `storage`, scoped `log`, and `onCleanup`. Subscriptions are torn down on dispose; per-connection work must hang off the `registered` lifecycle event (modules persist across reconnects).
 - Built-in modules (`src/modules/`): `ping`, `help`, `admin` (owner-only; `!raw` opt-in), `ctcp` (rate-limited), `autojoin` (reconnect-safe). `builtinModules` seeds the default registry; external modules come from config `externalModules` (dynamically imported — config is a trust boundary equal to bot code).
 - Commands run through a single bounded RxJS PRIVMSG pipeline (`CommandRouter`): cheap parse/lookup/ignore/permission gating, then an `#inFlight` concurrency cap that drops on saturation; per-handler timeout; cooldown after admission. Replies go through `safeSay`/`safeNotice` (the client's `send()` throws synchronously on bad input). One `Bot` = one network.

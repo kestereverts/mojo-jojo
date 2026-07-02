@@ -157,5 +157,7 @@ export {
   type SaslStep,
 } from "./protocol/sasl.ts";
 
-// Re-export the message intermediate representation for convenience.
+// Re-export the message intermediate representation (and its parser/serializer)
+// for convenience, so consumers don't need a direct @mojo-jojo/irc-message dep.
 export type { Message, Source, Tags } from "@mojo-jojo/irc-message";
+export { parseMessage, buildMessage } from "@mojo-jojo/irc-message";

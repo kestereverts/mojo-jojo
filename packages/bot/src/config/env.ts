@@ -1,18 +1,17 @@
 import type { SaslOptions } from "@mojo-jojo/irc-client";
-import { ConfigError } from "./validate.ts";
+import { ConfigError, isRecord } from "./validate.ts";
 import type { TlsConfig } from "./schema.ts";
 
 /** Process-environment shape (a subset of `process.env`). */
 export type Env = Record<string, string | undefined>;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function parseEnvBool(value: string, name: string): boolean {
   const t = value.trim().toLowerCase();
   if (t === "1" || t === "true") return true;
-  if (t === "0" || t === "false" || t === "") return false;
+  if (t === "0" || t === "false") return false;
+  // A set-but-empty value is ambiguous — fail loud rather than silently treating
+  // it as `false` (e.g. an empty `IRC_TLS=` must not quietly downgrade to plaintext
+  // and send credentials in the clear).
   throw new ConfigError([`${name}: expected a boolean (1/true or 0/false), got "${value}"`]);
 }
 
@@ -80,7 +79,19 @@ export function applyEnvOverrides(raw: unknown, env: Env): Record<string, unknow
   if (env.IRC_PASSWORD !== undefined) server.password = env.IRC_PASSWORD;
 
   const sasl = resolveEnvSasl(env);
-  if (sasl !== undefined) server.sasl = sasl;
+  if (sasl !== undefined) {
+    // Env SASL credentials are PLAIN. If the file explicitly configured a
+    // different mechanism (e.g. cert-based EXTERNAL), silently replacing it with
+    // PLAIN would be a security downgrade — fail loud and make the operator choose.
+    const fileMech = isRecord(server.sasl) ? server.sasl.mechanism : undefined;
+    if (fileMech !== undefined && fileMech !== "PLAIN") {
+      throw new ConfigError([
+        `IRC_SASL_USER/IRC_SASL_PASS supply PLAIN credentials, but [server.sasl] sets ` +
+          `mechanism = "${String(fileMech)}". Remove the env vars or set mechanism = "PLAIN".`,
+      ]);
+    }
+    server.sasl = sasl;
+  }
 
   if (env.BOT_PREFIX !== undefined) bot.prefix = env.BOT_PREFIX;
   if (env.BOT_OWNERS !== undefined) bot.owners = splitList(env.BOT_OWNERS);

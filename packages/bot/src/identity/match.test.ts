@@ -42,6 +42,14 @@ describe("matchesIdentity", () => {
     expect(matchesIdentity(e, "mask:a{b}!*@*", new CaseMapper("ascii"))).toBe(false); // ascii does not
   });
 
+  test("mask: a NO-bang mask also folds the nick under casemapping (M1)", () => {
+    const e = fakePrivmsg({ nick: "evil[]", username: "u", host: "h" });
+    // `evil{}` is the same identity as `evil[]` under rfc1459 — a no-bang mask
+    // must match it, or an ignore/owner mask could be evaded by switching nicks.
+    expect(matchesIdentity(e, "mask:evil{}*", cm)).toBe(true);
+    expect(matchesIdentity(e, "mask:evil{}*", new CaseMapper("ascii"))).toBe(false);
+  });
+
   test("account: a divergent message tag wins over a stale cache", () => {
     expect(matchesIdentity(fakePrivmsg({ messageAccount: "alice", account: "bob" }), "account:bob", cm)).toBe(false);
     expect(matchesIdentity(fakePrivmsg({ messageAccount: "alice", account: "bob" }), "account:alice", cm)).toBe(true);

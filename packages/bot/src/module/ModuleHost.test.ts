@@ -153,6 +153,61 @@ describe("ModuleHost", () => {
     expect(runs).toBe(1);
   });
 
+  test("onCleanup registered AFTER dispose runs immediately instead of leaking (M2)", async () => {
+    const { client } = fakeClient();
+    let ran = false;
+    let register!: (fn: () => void) => void;
+    const mod = defineModule({
+      name: "m",
+      setup(ctx) {
+        register = ctx.onCleanup;
+      },
+    });
+    const host = makeHost(mod, {}, client);
+    await host.setup();
+    await host.dispose();
+    // Simulate async work resolving after teardown and registering a cleanup.
+    register(() => {
+      ran = true;
+    });
+    await Promise.resolve();
+    expect(ran).toBe(true);
+  });
+
+  test("onEachConnection runs setup per registration and teardown on disconnect (4.3)", async () => {
+    const lifecycle$ = new Subject<ClientEvent>();
+    const client = {
+      events$: new Subject(),
+      clientEvents$: new Subject(),
+      lifecycle$,
+      messages$: new Subject(),
+    } as unknown as IrcClient;
+
+    const events: string[] = [];
+    const mod = defineModule({
+      name: "m",
+      setup(ctx) {
+        ctx.onEachConnection(() => {
+          events.push("setup");
+          return () => void events.push("teardown");
+        });
+      },
+    });
+    const host = makeHost(mod, {}, client);
+    await host.setup();
+
+    lifecycle$.next({ type: "registered", nick: "me" } as ClientEvent);
+    expect(events).toEqual(["setup"]);
+    lifecycle$.next({ type: "disconnected", local: false } as ClientEvent);
+    expect(events).toEqual(["setup", "teardown"]);
+    // Re-arms on the next registration.
+    lifecycle$.next({ type: "registered", nick: "me" } as ClientEvent);
+    expect(events).toEqual(["setup", "teardown", "setup"]);
+    // Dispose runs the outstanding teardown.
+    await host.dispose();
+    expect(events).toEqual(["setup", "teardown", "setup", "teardown"]);
+  });
+
   test("cooldown is namespaced per module; isIgnored consults the ignore list", async () => {
     const { client } = fakeClient();
     const cooldowns = new Cooldowns();
