@@ -143,3 +143,6 @@ vite.config.ts.timestamp-*
 .vite/
 
 plans/
+
+# Local bot runtime config (secrets/host live here); use config.example.toml as the template
+/apps/app/config.toml
