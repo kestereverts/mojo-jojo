@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { MockLanguageModelV4 } from "ai/test";
+import type { Friend } from "../identity/speakers.ts";
 import { DebugHarness, parseContextEvents } from "./harness.ts";
 
 const FIXED = () => new Date("2026-01-01T00:00:00.000Z");
@@ -71,9 +72,77 @@ describe("DebugHarness.chat", () => {
 
   test("inject stages events before the chat", async () => {
     const h = new DebugHarness({ model: textModel("y"), tools: {} });
-    h.inject({ kind: "chat-message", at: FIXED().toISOString(), speaker: { nick: "bob" }, text: "prior", addressed: true });
+    h.inject({
+      kind: "chat-message",
+      at: FIXED().toISOString(),
+      speaker: { nick: "bob", trust: "nick" },
+      text: "prior",
+      addressed: true,
+    });
     const outcome = await h.chat("now");
     expect(outcome.history.map((e) => e.kind)).toEqual(["chat-message", "chat-message", "bot-reply"]);
+  });
+
+  describe("identity resolution", () => {
+    const alice: Friend = { id: "alice", name: "Alice", aliases: ["alice", "AliceTG"], accounts: ["alice"] };
+
+    test("direct chat (no --via): speaker.trust is 'nick' by default, 'account' when --account is set", async () => {
+      const h = new DebugHarness({ model: textModel("hi"), tools: {}, friends: [alice] });
+      const direct = await h.chat("hi", { as: "alice" });
+      expect(direct.speaker).toMatchObject({ nick: "alice", trust: "nick", personId: "alice" });
+      expect(direct.speaker.account).toBeUndefined();
+
+      const withAccount = await h.chat("hi", { as: "alice", account: "alice" });
+      expect(withAccount.speaker).toMatchObject({ nick: "alice", account: "alice", trust: "account", personId: "alice" });
+    });
+
+    test("--via simulates a relay: nick becomes the relay bot, --as becomes the author, trust is 'relay'", async () => {
+      const h = new DebugHarness({ model: textModel("hi"), tools: {}, friends: [alice] });
+      const outcome = await h.chat("what city", { as: "AliceTG", via: "Telegram" });
+      expect(outcome.speaker).toEqual({
+        nick: "Telegram",
+        author: "AliceTG",
+        via: "Telegram",
+        personId: "alice",
+        trust: "relay",
+      });
+      // Persisted in history exactly as resolved — same object, same fidelity as the live module.
+      expect(outcome.history[0]).toMatchObject({ kind: "chat-message", speaker: outcome.speaker });
+    });
+
+    test("--via ignores --account (a relay-attributed author has no IRC account)", async () => {
+      const h = new DebugHarness({ model: textModel("hi"), tools: {} });
+      const outcome = await h.chat("hi", { as: "bob", via: "Discord", account: "should-be-ignored" });
+      expect(outcome.speaker.account).toBeUndefined();
+      expect(outcome.speaker.trust).toBe("relay");
+    });
+
+    test("no friend match -> personId absent, resolution still succeeds", async () => {
+      const h = new DebugHarness({ model: textModel("hi"), tools: {}, friends: [alice] });
+      const outcome = await h.chat("hi", { as: "stranger" });
+      expect(outcome.speaker.personId).toBeUndefined();
+    });
+
+    test("instructions include the known-users section when friends are configured", async () => {
+      const captured: { systemPrompt?: unknown } = {};
+      const model = new MockLanguageModelV4({
+        doGenerate: async (options: { prompt: unknown }) => {
+          captured.systemPrompt = options.prompt;
+          return {
+            content: [{ type: "text", text: "hi" }],
+            finishReason: { unified: "stop", raw: undefined },
+            usage: {
+              inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+              outputTokens: { total: 1, text: 1, reasoning: undefined },
+            },
+            warnings: [],
+          };
+        },
+      });
+      const h = new DebugHarness({ model, tools: {}, friends: [{ ...alice, city: "Testville" }] });
+      await h.chat("hi", { as: "alice" });
+      expect(JSON.stringify(captured.systemPrompt)).toContain("Testville");
+    });
   });
 });
 

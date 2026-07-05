@@ -10,11 +10,31 @@
  * divergent build/persist/replay paths.
  */
 
-/** Who/what a chat line came from, as resolved by the IRC layer (authoritative). */
+/**
+ * Who/what a chat line came from, fully resolved before it is persisted (see
+ * `identity/`). Mojo lives in a relay channel — users arrive over IRC,
+ * Telegram, and Discord bridges — so identity here is deliberately *soft*:
+ * there is no single authoritative account, only a trust tier reflecting how
+ * strong a signal we had. This is a point-in-time snapshot, frozen at speak
+ * time; a later `friends.toml` correction does not rewrite past messages.
+ */
 export interface Speaker {
+  /** The nick that actually sent the PRIVMSG (the relay bot's nick, if `via` is set). */
   readonly nick: string;
-  /** Services account, when known. Identity claims in message text are not trusted. */
+  /** IRC services account, when known (message-scoped account-tag; see `resolveAccount`). */
   readonly account?: string;
+  /** Relay-unwrapped author name, when this line came through a bridge (see `identity/relay.ts`). */
+  readonly author?: string;
+  /** The relay bot's configured nick that carried this message, when `author` is set. */
+  readonly via?: string;
+  /** A `friends.toml` person id, when an alias/account match was found. */
+  readonly personId?: string;
+  /**
+   * How strong the identity signal was: `account` (IRC services, strongest) >
+   * `relay` (bridge-attributed author — spoofable at the bridge) > `nick`
+   * (direct IRC, unregistered — spoofable by taking the nick). Always set.
+   */
+  readonly trust: "account" | "relay" | "nick";
 }
 
 /** A user-visible chat line from the channel or PM. */

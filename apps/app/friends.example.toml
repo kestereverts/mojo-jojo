@@ -1,0 +1,23 @@
+# friends.example.toml — annotated template. Copy to friends.toml and edit with
+# real data; friends.toml is gitignored (real names/aliases/facts should never
+# be committed). Path is configured via [modules.mojo-ai] friendsFile.
+#
+# Each [[person]] links one real person's nicks/relay-author names across IRC,
+# Telegram, and Discord to a single identity, so the bot recognizes them
+# regardless of which bridge they're speaking through. Missing or malformed
+# entries are skipped with a warning — the bot still runs without this file.
+
+[[person]]
+id = "alice"                                # stable identifier; must be unique
+name = "Alice Example"                      # real name, for the bot's own reference
+aliases = ["alice", "alice_", "AliceTG"]    # IRC nicks + relay-unwrapped author names, any platform
+accounts = ["alice"]                        # IRC services accounts (strongest identity signal)
+city = "Amsterdam"                          # optional freeform fact
+notes = "Prefers being called Al."          # optional freeform fact
+
+[[person]]
+id = "bob"
+name = "Bob Example"
+aliases = ["bob", "BobDiscord"]
+# accounts = []                             # accounts are optional; alias/nick matching still works
+city = "Rotterdam"

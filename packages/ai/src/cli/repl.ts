@@ -1,5 +1,6 @@
 import * as readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import type { Friend } from "../identity/speakers.ts";
 import { DebugHarness, parseContextEvents, type ChatOptions } from "./harness.ts";
 import { formatHuman, modelRoleLine, type ModelRoleStatus } from "./inspect.ts";
 
@@ -11,6 +12,8 @@ export interface ReplOptions extends ChatOptions {
   readonly verbose?: boolean;
   /** Resolved once at startup by the CLI entry; shown in the banner and via `/models`. */
   readonly modelRoles?: ModelRoleStatus[];
+  /** Known people for identity resolution, loaded once at startup (see `identity/speakers.ts`). */
+  readonly friends?: readonly Friend[];
 }
 
 const HELP = `Commands:
@@ -97,6 +100,7 @@ function newHarness(options: ReplOptions): DebugHarness {
     maxSteps: options.maxSteps,
     replyLines: options.replyLines,
     historyLimit: options.historyLimit,
+    friends: options.friends,
   });
 }
 

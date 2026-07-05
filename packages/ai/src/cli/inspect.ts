@@ -1,5 +1,5 @@
 import type { ModelMessage } from "ai";
-import type { ContextEvent, TurnContext } from "../context/events.ts";
+import type { ContextEvent, Speaker, TurnContext } from "../context/events.ts";
 import type { ExchangeStep } from "../exchange.ts";
 import { resolveEmbeddingModel, resolveModel, type ModelRoles } from "../models.ts";
 import type { ChatOutcome, HarnessError } from "./harness.ts";
@@ -27,6 +27,12 @@ export interface Inspection {
   readonly history: readonly ContextEvent[];
   /** Per-role model specs and whether each resolves (M2's CLI-verifiable surface). Absent unless requested. */
   readonly modelRoles: ModelRoleStatus[] | null;
+  /**
+   * The fully resolved speaker for this turn's incoming line — trust tier,
+   * relay author/via when `--via` was used, and any friends-file match
+   * (M3's CLI-verifiable surface for identity resolution).
+   */
+  readonly speaker: Speaker;
 }
 
 /** One role's configured spec and whether it constructs a model without throwing (no network call). */
@@ -100,6 +106,7 @@ export function buildInspection(
     ephemera: outcome.turn,
     history: outcome.history,
     modelRoles: extra.modelRoles ?? null,
+    speaker: outcome.speaker,
   };
 }
 
@@ -122,6 +129,8 @@ export function formatHuman(
   if (i.modelRoles) {
     out.push(section("MODELS", i.modelRoles.map(modelRoleLine).join("\n")));
   }
+
+  out.push(section("SPEAKER", speakerLine(i.speaker)));
 
   if (i.error) {
     out.push(section("ERROR", errorLine(i.error)));
@@ -206,6 +215,17 @@ function tokenUsage(usage: { inputTokens?: number; outputTokens?: number; totalT
 /** Shared with `repl.ts` (banner + `/models`) so the two surfaces render identically. */
 export function modelRoleLine(m: ModelRoleStatus): string {
   return m.ok ? `${m.role}: ${m.spec}` : `${m.role}: ${m.spec} ✗ ${m.error}`;
+}
+
+/** One-line rendering of the resolved identity for this turn's speaker. */
+function speakerLine(speaker: Speaker): string {
+  const parts = [`nick=${speaker.nick}`];
+  if (speaker.account) parts.push(`account=${speaker.account}`);
+  if (speaker.author) parts.push(`author=${speaker.author}`);
+  if (speaker.via) parts.push(`via=${speaker.via}`);
+  parts.push(`trust=${speaker.trust}`);
+  parts.push(speaker.personId ? `personId=${speaker.personId}` : "personId=(no match)");
+  return parts.join(" ");
 }
 
 function errorLine(e: HarnessError): string {

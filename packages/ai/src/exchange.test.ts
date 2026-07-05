@@ -39,7 +39,7 @@ function textStep(text: string): GenResult {
 
 function logWith(text: string): InMemoryContextLog {
   const log = new InMemoryContextLog();
-  log.append({ kind: "chat-message", at: TURN.nowUtc, speaker: { nick: "a" }, text, addressed: true });
+  log.append({ kind: "chat-message", at: TURN.nowUtc, speaker: { nick: "a", trust: "nick" }, text, addressed: true });
   return log;
 }
 

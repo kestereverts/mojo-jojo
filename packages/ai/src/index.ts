@@ -22,4 +22,24 @@ export {
 export { toReplyLines } from "./reply.ts";
 export { resolveModel, resolveEmbeddingModel, type ModelRoles } from "./models.ts";
 export { defaultTools } from "./tools.ts";
-export { DEFAULT_INSTRUCTIONS } from "./persona.ts";
+export {
+  runChatMiddleware,
+  type ChatMessage,
+  type ChatMiddleware,
+  type SpeakerFacts,
+} from "./identity/middleware.ts";
+export {
+  createRelayMiddleware,
+  parseRelays,
+  stripIrcFormatting,
+  type RelayDefinition,
+} from "./identity/relay.ts";
+export {
+  loadFriendsFile,
+  resolveSpeaker,
+  type Friend,
+  type LoadFriendsResult,
+} from "./identity/speakers.ts";
+export { type PromptSection, assembleInstructions } from "./prompt/sections.ts";
+export { buildKnownUsersSection } from "./prompt/friends.ts";
+export { buildDefaultInstructions } from "./prompt/instructions.ts";

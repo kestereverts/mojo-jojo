@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 import { stderr, stdout } from "node:process";
+import { resolve as pathResolve } from "node:path";
 import { ConfigError } from "@mojo-jojo/bot";
 import { mojoAiModule } from "../mojo-ai.ts";
+import { loadFriendsFile, type Friend } from "../identity/speakers.ts";
 import { DebugHarness, parseContextEvents } from "./harness.ts";
 import { describeModelRoles, formatHuman, formatJson } from "./inspect.ts";
 import { runRepl } from "./repl.ts";
@@ -14,8 +16,13 @@ Usage:
   mojo-ai-debug repl [options]
 
 Options:
-  --as <nick>            speaker nick (default "you")
-  --account <name>       speaker services account
+  --as <name>            speaker identity: a nick, or (with --via) the
+                          relay-unwrapped author name (default "you")
+  --account <name>       speaker services account (ignored when --via is set)
+  --via <relay>          simulate a message relayed through this bridge bot's
+                          nick (e.g. "Telegram") — --as becomes the author
+  --friends <file>       friends.toml for identity resolution (defaults to
+                          --config's friendsFile, if either is set)
   --conversation <id>    conversation label (default "debug")
   --model <spec>         provider/model-id — overrides the "chat" role (see --config)
   --max-steps <n>        tool-loop iteration cap
@@ -27,7 +34,6 @@ Options:
   -h, --help             show this help
 
 Deferred (recognized, wired in later milestones):
-  --via <relay>          relay unwrapping — lands in M3
   --db <path>            SQLite persistence — lands in M8`;
 
 /** The module's own config type, imported structurally (the type isn't exported). */
@@ -47,6 +53,7 @@ export async function main(argv: string[]): Promise<number> {
         "max-steps": { type: "string" },
         inject: { type: "string" },
         config: { type: "string" },
+        friends: { type: "string" },
         json: { type: "boolean" },
         verbose: { type: "boolean" },
         via: { type: "string" },
@@ -68,7 +75,6 @@ export async function main(argv: string[]): Promise<number> {
   }
 
   // Deferred flags: honest notice rather than silent no-op.
-  if (values.via !== undefined) stderr.write("note: --via is recognized but not wired until M3.\n");
   if (values.db !== undefined) stderr.write("note: --db is recognized but not wired until M8.\n");
 
   // Config load + flag validation raise UsageError → a clean exit 2 (not the
@@ -76,6 +82,7 @@ export async function main(argv: string[]): Promise<number> {
   // the harness (captured in the outcome, exit 1).
   try {
     const cliConfig = await loadCliConfig(values.config);
+    const friends = await loadCliFriends(values.friends ?? cliConfig.friendsFile);
     const model = values.model ?? cliConfig.models.chat;
     const maxSteps =
       values["max-steps"] !== undefined
@@ -103,6 +110,7 @@ export async function main(argv: string[]): Promise<number> {
         maxSteps,
         replyLines: cliConfig.replyLines,
         historyLimit: cliConfig.historyLimit,
+        friends,
       });
       if (values.inject) {
         for (const event of await readInjectFile(values.inject)) harness.inject(event);
@@ -110,6 +118,7 @@ export async function main(argv: string[]): Promise<number> {
       const outcome = await harness.chat(message, {
         as: values.as,
         account: values.account,
+        via: values.via,
         conversation: values.conversation,
       });
       stdout.write(
@@ -128,8 +137,10 @@ export async function main(argv: string[]): Promise<number> {
         maxSteps,
         replyLines: cliConfig.replyLines,
         historyLimit: cliConfig.historyLimit,
+        friends,
         as: values.as,
         account: values.account,
+        via: values.via,
         conversation: values.conversation,
         verbose: values.verbose,
         modelRoles,
@@ -185,6 +196,21 @@ async function readInjectFile(path: string) {
  * CLI and live can never silently disagree on defaults, bounds, or role
  * fallback. `path` absent → parse an empty slice (all defaults).
  */
+/**
+ * Load `friends.toml` for the CLI: `--friends` wins over `--config`'s
+ * `friendsFile` (same precedence as `--model` over `models.chat`). Absent
+ * both → no friends, no error (matches the module's own optional-file stance).
+ * Warnings (missing/invalid file, malformed entries) print to stderr rather
+ * than failing the run — friends data is enrichment, not required config.
+ */
+async function loadCliFriends(path: string | undefined): Promise<readonly Friend[]> {
+  if (!path) return [];
+  const resolved = pathResolve(path);
+  const { friends, warnings } = await loadFriendsFile(resolved);
+  for (const warning of warnings) stderr.write(`note: friends file: ${warning}\n`);
+  return friends;
+}
+
 async function loadCliConfig(path: string | undefined): Promise<MojoAiConfig> {
   const parseConfig = mojoAiModule().parseConfig;
   if (!parseConfig) throw new Error("mojoAiModule() has no parseConfig — this is a bug");

@@ -1,10 +1,12 @@
 import type { LanguageModel, ToolSet } from "ai";
-import type { ContextEvent, TurnContext } from "../context/events.ts";
+import type { ContextEvent, Speaker, TurnContext } from "../context/events.ts";
 import { InMemoryContextLog, type ContextLog } from "../context/log.ts";
 import { runExchange, type ExchangeResult } from "../exchange.ts";
 import { toReplyLines } from "../reply.ts";
 import { defaultTools } from "../tools.ts";
-import { DEFAULT_INSTRUCTIONS } from "../persona.ts";
+import { buildDefaultInstructions } from "../prompt/instructions.ts";
+import { resolveSpeaker, type Friend } from "../identity/speakers.ts";
+import type { SpeakerFacts } from "../identity/middleware.ts";
 
 /**
  * Headless driver for one conversation. It constructs the *same* dependencies
@@ -19,7 +21,7 @@ import { DEFAULT_INSTRUCTIONS } from "../persona.ts";
 export interface HarnessConfig {
   /** `"provider/model-id"` spec or an injected `LanguageModel` (mock, for tests). */
   readonly model: string | LanguageModel;
-  /** Persona / system prompt (defaults to the shipped {@link DEFAULT_INSTRUCTIONS}). */
+  /** Persona / system prompt (defaults to {@link buildDefaultInstructions} with no friends). */
   readonly instructions?: string;
   /** Tool set (defaults to {@link defaultTools}). */
   readonly tools?: ToolSet;
@@ -32,13 +34,24 @@ export interface HarnessConfig {
   readonly log?: ContextLog;
   /** Deterministic clock seam for tests. Defaults to `() => new Date()`. */
   readonly now?: () => Date;
+  /** Known people for identity resolution (see `identity/speakers.ts`). Defaults to none. */
+  readonly friends?: readonly Friend[];
 }
 
 export interface ChatOptions {
-  /** Speaker nick for this line (defaults to `"you"`). */
+  /**
+   * Speaker identity for this line. Without `via`, this is the nick speaking
+   * directly (defaults to `"you"`). With `via`, this is the relay-unwrapped
+   * AUTHOR name — matching what the live relay middleware produces — and the
+   * nick becomes `via` (the relay bot's own nick), simulating a bridged line
+   * without needing a raw pattern match (that path is covered by
+   * `identity/relay.test.ts`).
+   */
   readonly as?: string;
-  /** Speaker services account, when simulating a registered user. */
+  /** Speaker services account, when simulating a registered user. Ignored when `via` is set (a relay-attributed author has no IRC account). */
   readonly account?: string;
+  /** Simulate a message relayed through this bridge bot's nick (e.g. "Telegram"). */
+  readonly via?: string;
   /** Conversation label rendered into `TurnContext.conversation`. */
   readonly conversation?: string;
   /** Extra ephemeral guidance for this turn only (appended after the brevity rule). */
@@ -66,6 +79,8 @@ export interface ChatOutcome {
   readonly error?: HarnessError;
   /** Durable log after this turn (the projection's source of truth). */
   readonly history: readonly ContextEvent[];
+  /** The fully resolved speaker persisted for this turn's incoming line (trust tier + friend match). */
+  readonly speaker: Speaker;
 }
 
 const DEFAULTS = { maxSteps: 8, replyLines: 3, historyLimit: 200, conversation: "debug" } as const;
@@ -98,12 +113,19 @@ export class DebugHarness {
    */
   async chat(text: string, options: ChatOptions = {}): Promise<ChatOutcome> {
     const replyLines = this.#config.replyLines ?? DEFAULTS.replyLines;
-    const nick = options.as ?? "you";
+
+    // Mirrors the live pipeline's final identity step: build the facts a
+    // middleware chain would have produced, then resolveSpeaker finalizes
+    // trust + a friends-file match — same function, same shape, no divergence.
+    const facts: SpeakerFacts = options.via
+      ? { nick: options.via, author: options.as ?? "you", via: options.via }
+      : { nick: options.as ?? "you", ...(options.account ? { account: options.account } : {}) };
+    const speaker = resolveSpeaker(facts, this.#config.friends ?? []);
 
     this.log.append({
       kind: "chat-message",
       at: this.#now().toISOString(),
-      speaker: { nick, ...(options.account ? { account: options.account } : {}) },
+      speaker,
       text,
       addressed: true,
     });
@@ -118,12 +140,19 @@ export class DebugHarness {
     try {
       result = await runExchange(this.log, turn, {
         model: this.#config.model,
-        instructions: this.#config.instructions ?? DEFAULT_INSTRUCTIONS,
+        instructions: this.#config.instructions ?? buildDefaultInstructions(this.#config.friends),
         tools: this.#config.tools ?? defaultTools(),
         maxSteps: this.#config.maxSteps ?? DEFAULTS.maxSteps,
       });
     } catch (cause) {
-      return { reply: "", replyLines: [], turn, error: toHarnessError(cause), history: this.log.events() };
+      return {
+        reply: "",
+        replyLines: [],
+        turn,
+        error: toHarnessError(cause),
+        history: this.log.events(),
+        speaker,
+      };
     }
 
     const lines = toReplyLines(result.text, replyLines);
@@ -131,7 +160,7 @@ export class DebugHarness {
       this.log.append({ kind: "bot-reply", at: this.#now().toISOString(), text: lines.join("\n") });
     }
 
-    return { reply: lines.join("\n"), replyLines: lines, turn, result, history: this.log.events() };
+    return { reply: lines.join("\n"), replyLines: lines, turn, result, history: this.log.events(), speaker };
   }
 }
 

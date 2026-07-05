@@ -11,7 +11,7 @@ const turn: TurnContext = {
 const chat = (nick: string, text: string, addressed = false): ContextEvent => ({
   kind: "chat-message",
   at: "2026-07-03T11:59:00.000Z",
-  speaker: { nick },
+  speaker: { nick, trust: "nick" },
   text,
   addressed,
 });

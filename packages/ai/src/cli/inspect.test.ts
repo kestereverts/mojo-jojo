@@ -49,6 +49,7 @@ describe("buildInspection", () => {
       turn: { nowUtc: "2026-01-01T00:00:00.000Z", conversation: "#test", guidance: [] },
       error: { name: "APICallError", message: "rate limited", statusCode: 429 },
       history: [],
+      speaker: { nick: "you", trust: "nick" },
     };
     const i = buildInspection(errored);
     expect(i.error).toEqual({ name: "APICallError", message: "rate limited", statusCode: 429 });

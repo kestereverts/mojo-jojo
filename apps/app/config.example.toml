@@ -75,13 +75,28 @@ channels = ["#mojo2"]
 # historyLimit = 200 # per-conversation memory window (context events)
 # maxSteps = 8       # tool-loop iterations per exchange
 # replyLines = 3     # max IRC lines per reply
+# friendsFile = "./friends.toml" # real-person data (gitignored); see friends.example.toml
 
 # Model per occasion, each "provider/model-id"; unset roles default to `chat`
 # (embedding defaults to openai/text-embedding-3-small instead). classifier/
-# summarizer/research aren't consumed by any exchange yet (land in M5-M7).
+# embedding are consumed by guards (M7); summarizer by compaction (M8);
+# research by subagents (M6) — validated/resolvable now, not yet consumed.
 [modules.mojo-ai.models]
 chat = "openai/gpt-5.4-mini"
 # classifier = "openai/gpt-5.4-mini"
 # summarizer = "openai/gpt-5.4-mini"
 # research = "openai/gpt-5.4-mini"
 # embedding = "openai/text-embedding-3-small"
+
+# Relay/bridge bots to unwrap (Telegram/Discord, etc). Each pattern MUST have
+# named groups (?<author>...) and (?<text>...); matched against a copy of the
+# line with mIRC formatting codes stripped (Discord color-wraps the author).
+# A relay sender whose line doesn't match falls through unchanged (safe
+# degrade — treated as the relay bot's own words).
+# [[modules.mojo-ai.relays]]
+# nick = "Telegram"
+# pattern = '^(?<author>.+?): (?<text>.*)$'
+#
+# [[modules.mojo-ai.relays]]
+# nick = "Discord"
+# pattern = '^<(?<author>.+?)> (?<text>.*)$'

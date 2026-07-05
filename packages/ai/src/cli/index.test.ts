@@ -61,12 +61,12 @@ describe("main — usage & validation exit codes (no network)", () => {
     expect(r.err).toContain("[1, 10]");
   });
 
-  test("deferred flags print an honest notice", async () => {
+  test("--db (still deferred) prints an honest notice; --via (wired since M3) does not", async () => {
     // Pair with a validation error so no exchange runs.
     const r = await run(["chat", "hi", "--via", "Telegram", "--db", "/tmp/x.db", "--max-steps", "0"]);
     expect(r.code).toBe(2);
-    expect(r.err).toContain("--via is recognized but not wired until M3");
     expect(r.err).toContain("--db is recognized but not wired until M8");
+    expect(r.err).not.toContain("--via");
   });
 
   test("--config [modules.mojo-ai.models] bad role type surfaces the module's own path in the error", async () => {
