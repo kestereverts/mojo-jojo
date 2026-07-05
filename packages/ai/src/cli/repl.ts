@@ -7,6 +7,7 @@ export interface ReplOptions extends ChatOptions {
   readonly model: string;
   readonly maxSteps?: number;
   readonly replyLines?: number;
+  readonly historyLimit?: number;
   readonly verbose?: boolean;
   /** Resolved once at startup by the CLI entry; shown in the banner and via `/models`. */
   readonly modelRoles?: ModelRoleStatus[];
@@ -95,6 +96,7 @@ function newHarness(options: ReplOptions): DebugHarness {
     model: options.model,
     maxSteps: options.maxSteps,
     replyLines: options.replyLines,
+    historyLimit: options.historyLimit,
   });
 }
 

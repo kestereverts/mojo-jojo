@@ -83,7 +83,13 @@ export async function main(argv: string[]): Promise<number> {
         : cliConfig.maxSteps;
     // Resolved once per invocation: which model each configured role maps to,
     // and whether it constructs without throwing (no network call) — M2's
-    // CLI-verifiable surface. --model overrides only the chat role's spec here.
+    // CLI-verifiable surface. --model overrides only chat's displayed spec
+    // here; classifier/summarizer/research that fell back to chat at parse
+    // time still show that original value, NOT the override — a state no
+    // real config can produce today (those roles always track the parsed
+    // chat). Harmless since only chat is consumed by any exchange, but if a
+    // later milestone starts consuming a fallback role, this display should
+    // be revisited so it can't misrepresent what will actually run.
     const modelRoles = describeModelRoles({ ...cliConfig.models, chat: model });
 
     if (command === "chat") {
@@ -92,7 +98,12 @@ export async function main(argv: string[]): Promise<number> {
         stderr.write(`chat needs a message.\n\n${USAGE}\n`);
         return 2;
       }
-      const harness = new DebugHarness({ model, maxSteps, replyLines: cliConfig.replyLines });
+      const harness = new DebugHarness({
+        model,
+        maxSteps,
+        replyLines: cliConfig.replyLines,
+        historyLimit: cliConfig.historyLimit,
+      });
       if (values.inject) {
         for (const event of await readInjectFile(values.inject)) harness.inject(event);
       }
@@ -116,6 +127,7 @@ export async function main(argv: string[]): Promise<number> {
         model,
         maxSteps,
         replyLines: cliConfig.replyLines,
+        historyLimit: cliConfig.historyLimit,
         as: values.as,
         account: values.account,
         conversation: values.conversation,
@@ -192,7 +204,14 @@ async function loadCliConfig(path: string | undefined): Promise<MojoAiConfig> {
   }
   const modules = (raw as { modules?: Record<string, unknown> }).modules;
   const slice = modules?.["mojo-ai"];
-  const sliceObj = typeof slice === "object" && slice !== null ? (slice as Record<string, unknown>) : {};
+  // Mirror the live bot's own module-table validation (Validator.optRecord):
+  // absent → not configured (defaults); present-but-not-a-table → a config
+  // error, not a silent empty slice (an actual "modules.mojo-ai = 42" would
+  // fail to load live, so the CLI must fail the same way).
+  if (slice !== undefined && (typeof slice !== "object" || slice === null)) {
+    throw new UsageError(`--config: modules.mojo-ai: expected a table, got ${JSON.stringify(slice)}`);
+  }
+  const sliceObj = (slice as Record<string, unknown> | undefined) ?? {};
   try {
     return parseConfig(sliceObj);
   } catch (cause) {

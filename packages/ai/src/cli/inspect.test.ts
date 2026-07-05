@@ -77,6 +77,16 @@ describe("describeModelRoles", () => {
     expect(byRole.research?.error).toContain('unknown model provider "anthropic"');
   });
 
+  test("routes the embedding role through resolveEmbeddingModel, not resolveModel", () => {
+    // `google` is a valid LANGUAGE provider but not a wired EMBEDDING provider.
+    // If the embedding branch ever mis-routed to resolveModel, this would
+    // wrongly show ok:true — pinning the routing, not just the happy path.
+    const statuses = describeModelRoles({ ...roles, embedding: "google/text-embedding-004" });
+    const embedding = statuses.find((s) => s.role === "embedding");
+    expect(embedding?.ok).toBe(false);
+    expect(embedding?.error).toContain('unknown embedding provider "google"');
+  });
+
   test("buildInspection/formatJson/formatHuman surface modelRoles only when passed", async () => {
     const outcome = await sampleOutcome();
     const statuses = describeModelRoles(roles);

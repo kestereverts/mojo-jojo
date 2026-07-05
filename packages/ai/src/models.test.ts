@@ -19,9 +19,10 @@ describe("resolveModel", () => {
     expect(resolveModel("openai/gpt-5.4-mini")).toBeTruthy();
   });
 
-  test("resolving the same spec twice reuses the cached provider instance", () => {
-    // Not strictly observable from the returned model, but resolving twice
-    // must not throw (e.g. re-registering something on a shared client).
+  test("resolving the same spec twice does not throw (smoke test for the lazy-cached provider)", () => {
+    // Caching itself isn't observable from the returned model; this only
+    // guards against a double-resolve throwing (e.g. re-registering
+    // something on a shared client).
     expect(() => {
       resolveModel("openai/gpt-5.4-mini");
       resolveModel("openai/gpt-5.4-mini");
@@ -32,6 +33,7 @@ describe("resolveModel", () => {
 describe("resolveEmbeddingModel", () => {
   test("rejects specs without a provider/model-id shape", () => {
     expect(() => resolveEmbeddingModel("no-slash")).toThrow(/provider\/model-id/);
+    expect(() => resolveEmbeddingModel("openai/")).toThrow(/provider\/model-id/);
   });
 
   test("rejects an unknown embedding provider, listing only wired ones", () => {

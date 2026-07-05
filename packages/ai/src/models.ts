@@ -11,13 +11,13 @@ import type { EmbeddingModel, LanguageModel } from "ai";
 export interface ModelRoles {
   /** The main conversational exchange. */
   readonly chat: string;
-  /** Input/output guard classifiers (M6). */
+  /** Input/output guard classifiers (M7). */
   readonly classifier: string;
-  /** Context-compaction summarization (M7). */
+  /** Context-compaction summarization (M8). */
   readonly summarizer: string;
-  /** Subagents, e.g. research (M5). */
+  /** Subagents, e.g. research (M6). */
   readonly research: string;
-  /** Leak-detector embeddings (M6). */
+  /** Leak-detector embeddings (M7). */
   readonly embedding: string;
 }
 

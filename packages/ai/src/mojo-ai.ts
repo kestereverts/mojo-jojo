@@ -23,7 +23,7 @@ interface MojoAiConfig {
    * `"provider/model-id"` specs per occasion (see {@link ModelRoles}). Only
    * `chat` is consumed today (the main exchange); `classifier`/`summarizer`/
    * `research`/`embedding` are resolved and validated now so later milestones
-   * (M5-M7) have them ready, and so `mojo-ai-debug` can show the full mapping.
+   * (M6-M8) have them ready, and so `mojo-ai-debug` can show the full mapping.
    * Keys come from GEMINI_API_KEY / OPENAI_API_KEY.
    */
   readonly models: ModelRoles;

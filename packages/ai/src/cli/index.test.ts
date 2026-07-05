@@ -75,4 +75,11 @@ describe("main — usage & validation exit codes (no network)", () => {
     expect(r.code).toBe(2);
     expect(r.err).toContain("modules.mojo-ai.models.chat");
   });
+
+  test("a non-table modules.mojo-ai entry errors instead of silently defaulting (matches live config load)", async () => {
+    const badEntry = await tmpConfig("[modules]\nmojo-ai = 42\n");
+    const r = await run(["chat", "hi", "--config", badEntry]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("modules.mojo-ai: expected a table");
+  });
 });
