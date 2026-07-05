@@ -27,10 +27,11 @@ describe("letter_count", () => {
   });
 
   test("NFC and NFD forms of the same accented letter count as one key (found in review)", async () => {
-    // Built from \u escapes, not typed accented characters, so the two forms
-    // can't accidentally collapse to the same bytes: nfc is "café"
-    // (precomposed é, one code point); nfd is "cafe" + "́" (combining
-    // acute accent) — the same rendered letter, genuinely different bytes.
+    // Built from explicit \u escapes (not typed accented characters, which
+    // risk being silently coerced to the same bytes): nfc is "café"
+    // (precomposed é, one code point); nfd is "café" ("e" plus a
+    // combining acute accent, two code points) — the same rendered letter,
+    // genuinely different bytes.
     const nfc = "café";
     const nfd = "café";
     expect(nfc).not.toBe(nfd);
