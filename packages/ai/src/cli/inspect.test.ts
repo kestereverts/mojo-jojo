@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { MockLanguageModelV4 } from "ai/test";
+import type { ModelRoles } from "../models.ts";
 import { DebugHarness, type ChatOutcome } from "./harness.ts";
-import { buildInspection, formatHuman, formatJson } from "./inspect.ts";
+import { buildInspection, describeModelRoles, formatHuman, formatJson } from "./inspect.ts";
 
 function mockModel(text: string) {
   return new MockLanguageModelV4({
@@ -54,6 +55,42 @@ describe("buildInspection", () => {
     expect(i.usage).toBeNull();
     expect(i.steps).toEqual([]);
     expect(formatHuman(errored)).toContain("APICallError [429]: rate limited");
+  });
+});
+
+describe("describeModelRoles", () => {
+  const roles: ModelRoles = {
+    chat: "openai/gpt-5.4-mini",
+    classifier: "openai/gpt-5.4-mini",
+    summarizer: "openai/gpt-5.4-mini",
+    research: "anthropic/claude-x", // unknown provider — must be caught, not thrown
+    embedding: "openai/text-embedding-3-small",
+  };
+
+  test("resolves every role, catching an unresolvable one instead of throwing", () => {
+    const statuses = describeModelRoles(roles);
+    expect(statuses).toHaveLength(5);
+    const byRole = Object.fromEntries(statuses.map((s) => [s.role, s]));
+    expect(byRole.chat).toMatchObject({ spec: "openai/gpt-5.4-mini", ok: true, error: null });
+    expect(byRole.embedding).toMatchObject({ spec: "openai/text-embedding-3-small", ok: true, error: null });
+    expect(byRole.research?.ok).toBe(false);
+    expect(byRole.research?.error).toContain('unknown model provider "anthropic"');
+  });
+
+  test("buildInspection/formatJson/formatHuman surface modelRoles only when passed", async () => {
+    const outcome = await sampleOutcome();
+    const statuses = describeModelRoles(roles);
+
+    expect(buildInspection(outcome).modelRoles).toBeNull();
+    expect(buildInspection(outcome, { modelRoles: statuses }).modelRoles).toEqual(statuses);
+
+    expect(formatHuman(outcome)).not.toContain("━━ MODELS ━━");
+    const withRoles = formatHuman(outcome, { modelRoles: statuses });
+    expect(withRoles).toContain("━━ MODELS ━━");
+    expect(withRoles).toContain("chat: openai/gpt-5.4-mini");
+    expect(withRoles).toContain("research: anthropic/claude-x ✗");
+
+    expect(JSON.parse(formatJson(outcome, { modelRoles: statuses })).modelRoles).toEqual(statuses);
   });
 });
 

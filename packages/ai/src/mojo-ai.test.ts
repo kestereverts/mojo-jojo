@@ -1,0 +1,77 @@
+import { describe, expect, test } from "bun:test";
+import { ConfigError } from "@mojo-jojo/bot";
+import { mojoAiModule } from "./mojo-ai.ts";
+
+function parse(raw: Record<string, unknown>) {
+  const module = mojoAiModule();
+  if (!module.parseConfig) throw new Error("mojoAiModule() has no parseConfig");
+  return module.parseConfig(raw);
+}
+
+describe("mojoAiModule().parseConfig — model roles", () => {
+  test("defaults: chat/classifier/summarizer/research share one default, embedding is separate", () => {
+    const config = parse({});
+    expect(config.models).toEqual({
+      chat: "openai/gpt-5.4-mini",
+      classifier: "openai/gpt-5.4-mini",
+      summarizer: "openai/gpt-5.4-mini",
+      research: "openai/gpt-5.4-mini",
+      embedding: "openai/text-embedding-3-small",
+    });
+  });
+
+  test("legacy top-level `model` is an alias for models.chat, and other roles fall back to it", () => {
+    const config = parse({ model: "google/gemini-3.5-flash" });
+    expect(config.models.chat).toBe("google/gemini-3.5-flash");
+    expect(config.models.classifier).toBe("google/gemini-3.5-flash");
+    expect(config.models.summarizer).toBe("google/gemini-3.5-flash");
+    expect(config.models.research).toBe("google/gemini-3.5-flash");
+    // embedding does not fall back to chat — it has its own default.
+    expect(config.models.embedding).toBe("openai/text-embedding-3-small");
+  });
+
+  test("[models] table wins over the legacy `model` key for chat", () => {
+    const config = parse({ model: "google/gemini-3.5-flash", models: { chat: "openai/gpt-5.4-mini" } });
+    expect(config.models.chat).toBe("openai/gpt-5.4-mini");
+  });
+
+  test("each role can be set independently; unset roles still default to the resolved chat", () => {
+    const config = parse({
+      models: { chat: "openai/gpt-5.4-mini", research: "google/gemini-3.5-flash" },
+    });
+    expect(config.models.chat).toBe("openai/gpt-5.4-mini");
+    expect(config.models.research).toBe("google/gemini-3.5-flash");
+    expect(config.models.classifier).toBe("openai/gpt-5.4-mini"); // falls back to chat
+    expect(config.models.summarizer).toBe("openai/gpt-5.4-mini");
+  });
+
+  test("embedding can be overridden independently of chat", () => {
+    const config = parse({ models: { embedding: "openai/text-embedding-3-large" } });
+    expect(config.models.embedding).toBe("openai/text-embedding-3-large");
+    expect(config.models.chat).toBe("openai/gpt-5.4-mini");
+  });
+
+  test("rejects a non-table `models` value", () => {
+    expect(() => parse({ models: "not-a-table" })).toThrow(ConfigError);
+  });
+
+  test("rejects a non-string role value, collecting the path in the error", () => {
+    try {
+      parse({ models: { chat: 42 } });
+      throw new Error("expected parseConfig to throw");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(ConfigError);
+      expect((cause as ConfigError).issues.join()).toContain("modules.mojo-ai.models.chat");
+    }
+  });
+});
+
+describe("mojoAiModule().parseConfig — other bounds unaffected by the models change", () => {
+  test("still defaults and range-checks historyLimit/maxSteps/replyLines", () => {
+    expect(parse({})).toMatchObject({ historyLimit: 200, maxSteps: 8, replyLines: 3 });
+    expect(() => parse({ replyLines: 0 })).toThrow(ConfigError);
+    expect(() => parse({ maxSteps: 33 })).toThrow(ConfigError);
+    const config = parse({ historyLimit: 50, maxSteps: 4, replyLines: 1 });
+    expect(config).toMatchObject({ historyLimit: 50, maxSteps: 4, replyLines: 1 });
+  });
+});

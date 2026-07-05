@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai";
 import type { ContextEvent, TurnContext } from "../context/events.ts";
 import type { ExchangeStep } from "../exchange.ts";
+import { resolveEmbeddingModel, resolveModel, type ModelRoles } from "../models.ts";
 import type { ChatOutcome, HarnessError } from "./harness.ts";
 
 /**
@@ -24,6 +25,35 @@ export interface Inspection {
   readonly ephemera: TurnContext;
   /** Durable events backing the projection. */
   readonly history: readonly ContextEvent[];
+  /** Per-role model specs and whether each resolves (M2's CLI-verifiable surface). Absent unless requested. */
+  readonly modelRoles: ModelRoleStatus[] | null;
+}
+
+/** One role's configured spec and whether it constructs a model without throwing (no network call). */
+export interface ModelRoleStatus {
+  readonly role: keyof ModelRoles;
+  readonly spec: string;
+  readonly ok: boolean;
+  readonly error: string | null;
+}
+
+/**
+ * Attempt to resolve every configured role, without making any network call
+ * (`resolveModel`/`resolveEmbeddingModel` only construct a client). Lets `chat`/
+ * `repl` show which occasion maps to which model, and catch a typo'd provider
+ * or model id before it would fail mid-exchange.
+ */
+export function describeModelRoles(models: ModelRoles): ModelRoleStatus[] {
+  return (Object.keys(models) as (keyof ModelRoles)[]).map((role) => {
+    const spec = models[role];
+    try {
+      if (role === "embedding") resolveEmbeddingModel(spec);
+      else resolveModel(spec);
+      return { role, spec, ok: true, error: null };
+    } catch (cause) {
+      return { role, spec, ok: false, error: cause instanceof Error ? cause.message : String(cause) };
+    }
+  });
 }
 
 interface TokenUsage {
@@ -44,7 +74,10 @@ interface StepInspection {
   readonly toolCalls: { toolName: string; input: unknown; output: unknown; error: string | null }[];
 }
 
-export function buildInspection(outcome: ChatOutcome): Inspection {
+export function buildInspection(
+  outcome: ChatOutcome,
+  extra: { modelRoles?: ModelRoleStatus[] } = {},
+): Inspection {
   const { result } = outcome;
   return {
     reply: outcome.reply,
@@ -66,11 +99,12 @@ export function buildInspection(outcome: ChatOutcome): Inspection {
     prompt: result?.prompt ?? [],
     ephemera: outcome.turn,
     history: outcome.history,
+    modelRoles: extra.modelRoles ?? null,
   };
 }
 
-export function formatJson(outcome: ChatOutcome): string {
-  return JSON.stringify(buildInspection(outcome), null, 2);
+export function formatJson(outcome: ChatOutcome, extra: { modelRoles?: ModelRoleStatus[] } = {}): string {
+  return JSON.stringify(buildInspection(outcome, extra), null, 2);
 }
 
 /**
@@ -78,9 +112,16 @@ export function formatJson(outcome: ChatOutcome): string {
  * timing + tool-call summary; `verbose` additionally dumps the rendered prompt,
  * ephemeral turn context, and durable history.
  */
-export function formatHuman(outcome: ChatOutcome, opts: { verbose?: boolean } = {}): string {
-  const i = buildInspection(outcome);
+export function formatHuman(
+  outcome: ChatOutcome,
+  opts: { verbose?: boolean; modelRoles?: ModelRoleStatus[] } = {},
+): string {
+  const i = buildInspection(outcome, { modelRoles: opts.modelRoles });
   const out: string[] = [];
+
+  if (i.modelRoles) {
+    out.push(section("MODELS", i.modelRoles.map(modelRoleLine).join("\n")));
+  }
 
   if (i.error) {
     out.push(section("ERROR", errorLine(i.error)));
@@ -160,6 +201,11 @@ function tokenUsage(usage: { inputTokens?: number; outputTokens?: number; totalT
     outputTokens: usage.outputTokens ?? null,
     totalTokens: usage.totalTokens ?? null,
   };
+}
+
+/** Shared with `repl.ts` (banner + `/models`) so the two surfaces render identically. */
+export function modelRoleLine(m: ModelRoleStatus): string {
+  return m.ok ? `${m.role}: ${m.spec}` : `${m.role}: ${m.spec} ✗ ${m.error}`;
 }
 
 function errorLine(e: HarnessError): string {

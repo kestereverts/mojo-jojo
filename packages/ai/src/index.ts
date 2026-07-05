@@ -20,6 +20,6 @@ export {
   type ExchangeToolCall,
 } from "./exchange.ts";
 export { toReplyLines } from "./reply.ts";
-export { resolveModel } from "./models.ts";
+export { resolveModel, resolveEmbeddingModel, type ModelRoles } from "./models.ts";
 export { defaultTools } from "./tools.ts";
 export { DEFAULT_INSTRUCTIONS } from "./persona.ts";

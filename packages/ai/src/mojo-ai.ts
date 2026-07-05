@@ -13,16 +13,49 @@ import { runExchange } from "./exchange.ts";
 import { toReplyLines } from "./reply.ts";
 import { defaultTools } from "./tools.ts";
 import { DEFAULT_INSTRUCTIONS } from "./persona.ts";
+import type { ModelRoles } from "./models.ts";
+
+const DEFAULT_CHAT_MODEL = "openai/gpt-5.4-mini";
+const DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-3-small";
 
 interface MojoAiConfig {
-  /** `"provider/model-id"` spec; keys come from GEMINI_API_KEY / OPENAI_API_KEY. */
-  readonly model: string;
+  /**
+   * `"provider/model-id"` specs per occasion (see {@link ModelRoles}). Only
+   * `chat` is consumed today (the main exchange); `classifier`/`summarizer`/
+   * `research`/`embedding` are resolved and validated now so later milestones
+   * (M5-M7) have them ready, and so `mojo-ai-debug` can show the full mapping.
+   * Keys come from GEMINI_API_KEY / OPENAI_API_KEY.
+   */
+  readonly models: ModelRoles;
   /** Per-conversation memory window (context events). */
   readonly historyLimit: number;
   /** Tool-loop iteration bound per exchange. */
   readonly maxSteps: number;
   /** Max IRC lines per reply; the rest is dropped. */
   readonly replyLines: number;
+}
+
+/**
+ * Resolve `[modules.mojo-ai.models]` plus the legacy top-level `model` key
+ * (now an alias for `models.chat`) into a full {@link ModelRoles}. Unset roles
+ * default to the resolved `chat` model — one strong model unless the operator
+ * opts specific occasions into something cheaper/different.
+ */
+function parseModelRoles(v: Validator, raw: Record<string, unknown>): ModelRoles {
+  const models = v.optRecord(raw.models, "modules.mojo-ai.models") ?? {};
+  const legacyModel = v.optNonEmptyString(raw.model, "modules.mojo-ai.model");
+  const chat =
+    v.optNonEmptyString(models.chat, "modules.mojo-ai.models.chat") ?? legacyModel ?? DEFAULT_CHAT_MODEL;
+  const role = (key: string): string =>
+    v.optNonEmptyString(models[key], `modules.mojo-ai.models.${key}`) ?? chat;
+  return {
+    chat,
+    classifier: role("classifier"),
+    summarizer: role("summarizer"),
+    research: role("research"),
+    embedding:
+      v.optNonEmptyString(models.embedding, "modules.mojo-ai.models.embedding") ?? DEFAULT_EMBEDDING_MODEL,
+  };
 }
 
 /** Bound on tracked conversations, so a channel-flood can't grow memory forever. */
@@ -46,13 +79,13 @@ export function mojoAiModule(): Module<MojoAiConfig> {
     description: "LLM chat brain (Vercel AI SDK).",
     parseConfig(raw) {
       const v = new Validator();
-      const model = v.optNonEmptyString(raw.model, "modules.mojo-ai.model") ?? "openai/gpt-5.4-mini";
+      const models = parseModelRoles(v, raw);
       const historyLimit =
         v.optIntegerInRange(raw.historyLimit, "modules.mojo-ai.historyLimit", 1, 5000) ?? 200;
       const maxSteps = v.optIntegerInRange(raw.maxSteps, "modules.mojo-ai.maxSteps", 1, 32) ?? 8;
       const replyLines = v.optIntegerInRange(raw.replyLines, "modules.mojo-ai.replyLines", 1, 10) ?? 3;
       v.throwIfAny();
-      return { model, historyLimit, maxSteps, replyLines };
+      return { models, historyLimit, maxSteps, replyLines };
     },
     setup(ctx) {
       const logs = new Map<string, ContextLog>();
@@ -121,7 +154,7 @@ export function mojoAiModule(): Module<MojoAiConfig> {
                         guidance: [`Reply in at most ${ctx.config.replyLines} short lines.`],
                       },
                       {
-                        model: ctx.config.model,
+                        model: ctx.config.models.chat,
                         instructions: DEFAULT_INSTRUCTIONS,
                         tools: defaultTools(),
                         maxSteps: ctx.config.maxSteps,

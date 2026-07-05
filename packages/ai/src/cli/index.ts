@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
 import { parseArgs } from "node:util";
 import { stderr, stdout } from "node:process";
+import { ConfigError } from "@mojo-jojo/bot";
+import { mojoAiModule } from "../mojo-ai.ts";
 import { DebugHarness, parseContextEvents } from "./harness.ts";
-import { formatHuman, formatJson } from "./inspect.ts";
+import { describeModelRoles, formatHuman, formatJson } from "./inspect.ts";
 import { runRepl } from "./repl.ts";
-
-const DEFAULT_MODEL = "openai/gpt-5.4-mini";
 
 const USAGE = `mojo-ai-debug — headless driver for the mojo-ai exchange core.
 
@@ -17,10 +17,11 @@ Options:
   --as <nick>            speaker nick (default "you")
   --account <name>       speaker services account
   --conversation <id>    conversation label (default "debug")
-  --model <spec>         provider/model-id (default from --config or ${DEFAULT_MODEL})
+  --model <spec>         provider/model-id — overrides the "chat" role (see --config)
   --max-steps <n>        tool-loop iteration cap
   --inject <file>        JSON file of event(s) to stage before the message
-  --config <file>        read model/settings from a config.toml [modules.mojo-ai] slice
+  --config <file>        read [modules.mojo-ai] through the SAME parseConfig the
+                          live module uses, so CLI and live never disagree
   --json                 emit machine-readable inspection
   --verbose              include rendered prompt, ephemera, and history
   -h, --help             show this help
@@ -29,11 +30,8 @@ Deferred (recognized, wired in later milestones):
   --via <relay>          relay unwrapping — lands in M3
   --db <path>            SQLite persistence — lands in M8`;
 
-interface CliConfig {
-  model?: string;
-  maxSteps?: number;
-  replyLines?: number;
-}
+/** The module's own config type, imported structurally (the type isn't exported). */
+type MojoAiConfig = ReturnType<NonNullable<ReturnType<typeof mojoAiModule>["parseConfig"]>>;
 
 export async function main(argv: string[]): Promise<number> {
   let parsed;
@@ -77,12 +75,16 @@ export async function main(argv: string[]): Promise<number> {
   // bin-level fatal-stack path). Exchange/network failures are handled inside
   // the harness (captured in the outcome, exit 1).
   try {
-    const cliConfig = values.config ? await loadCliConfig(values.config) : {};
-    const model = values.model ?? cliConfig.model ?? DEFAULT_MODEL;
+    const cliConfig = await loadCliConfig(values.config);
+    const model = values.model ?? cliConfig.models.chat;
     const maxSteps =
       values["max-steps"] !== undefined
         ? parsePositiveInt(values["max-steps"], "--max-steps")
         : cliConfig.maxSteps;
+    // Resolved once per invocation: which model each configured role maps to,
+    // and whether it constructs without throwing (no network call) — M2's
+    // CLI-verifiable surface. --model overrides only the chat role's spec here.
+    const modelRoles = describeModelRoles({ ...cliConfig.models, chat: model });
 
     if (command === "chat") {
       const message = rest.join(" ").trim();
@@ -99,7 +101,13 @@ export async function main(argv: string[]): Promise<number> {
         account: values.account,
         conversation: values.conversation,
       });
-      stdout.write(`${values.json ? formatJson(outcome) : formatHuman(outcome, { verbose: values.verbose })}\n`);
+      stdout.write(
+        `${
+          values.json
+            ? formatJson(outcome, { modelRoles })
+            : formatHuman(outcome, { verbose: values.verbose, modelRoles })
+        }\n`,
+      );
       return outcome.error ? 1 : 0;
     }
 
@@ -112,6 +120,7 @@ export async function main(argv: string[]): Promise<number> {
         account: values.account,
         conversation: values.conversation,
         verbose: values.verbose,
+        modelRoles,
       });
       return 0;
     }
@@ -158,7 +167,17 @@ async function readInjectFile(path: string) {
   }
 }
 
-async function loadCliConfig(path: string): Promise<CliConfig> {
+/**
+ * Read `[modules.mojo-ai]` from a config.toml and parse it through the SAME
+ * `parseConfig` the live module uses (not a hand-rolled reimplementation) —
+ * CLI and live can never silently disagree on defaults, bounds, or role
+ * fallback. `path` absent → parse an empty slice (all defaults).
+ */
+async function loadCliConfig(path: string | undefined): Promise<MojoAiConfig> {
+  const parseConfig = mojoAiModule().parseConfig;
+  if (!parseConfig) throw new Error("mojoAiModule() has no parseConfig — this is a bug");
+  if (!path) return parseConfig({});
+
   let text: string;
   try {
     text = await Bun.file(path).text();
@@ -173,22 +192,13 @@ async function loadCliConfig(path: string): Promise<CliConfig> {
   }
   const modules = (raw as { modules?: Record<string, unknown> }).modules;
   const slice = modules?.["mojo-ai"];
-  if (typeof slice !== "object" || slice === null) return {};
-  const s = slice as Record<string, unknown>;
-  // Same bounds the module's Validator enforces, so CLI and live agree.
-  return {
-    model: typeof s.model === "string" ? s.model : undefined,
-    maxSteps: intInRange(s.maxSteps, "modules.mojo-ai.maxSteps", 1, 32),
-    replyLines: intInRange(s.replyLines, "modules.mojo-ai.replyLines", 1, 10),
-  };
-}
-
-function intInRange(value: unknown, path: string, min: number, max: number): number | undefined {
-  if (value === undefined) return undefined;
-  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
-    throw new UsageError(`${path} must be an integer in [${min}, ${max}], got ${JSON.stringify(value)}`);
+  const sliceObj = typeof slice === "object" && slice !== null ? (slice as Record<string, unknown>) : {};
+  try {
+    return parseConfig(sliceObj);
+  } catch (cause) {
+    if (cause instanceof ConfigError) throw new UsageError(`--config: ${cause.message}`);
+    throw cause;
   }
-  return value;
 }
 
 function parsePositiveInt(value: string, flag: string): number {

@@ -68,4 +68,11 @@ describe("main — usage & validation exit codes (no network)", () => {
     expect(r.err).toContain("--via is recognized but not wired until M3");
     expect(r.err).toContain("--db is recognized but not wired until M8");
   });
+
+  test("--config [modules.mojo-ai.models] bad role type surfaces the module's own path in the error", async () => {
+    const badModels = await tmpConfig("[modules.mojo-ai.models]\nchat = 42\n");
+    const r = await run(["chat", "hi", "--max-steps", "0", "--config", badModels]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("modules.mojo-ai.models.chat");
+  });
 });

@@ -1,13 +1,15 @@
 import * as readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { DebugHarness, parseContextEvents, type ChatOptions } from "./harness.ts";
-import { formatHuman } from "./inspect.ts";
+import { formatHuman, modelRoleLine, type ModelRoleStatus } from "./inspect.ts";
 
 export interface ReplOptions extends ChatOptions {
   readonly model: string;
   readonly maxSteps?: number;
   readonly replyLines?: number;
   readonly verbose?: boolean;
+  /** Resolved once at startup by the CLI entry; shown in the banner and via `/models`. */
+  readonly modelRoles?: ModelRoleStatus[];
 }
 
 const HELP = `Commands:
@@ -15,6 +17,7 @@ const HELP = `Commands:
   /inject <json>    append an event (JSON object or array) to the log
   /dump             print the durable history as JSON
   /tokens           print cumulative token usage this session
+  /models           print the resolved role→model mapping
   /reset            clear the conversation log
   /help             show this help
   /exit             quit`;
@@ -36,7 +39,10 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     if (interactive) rl.prompt();
   };
 
-  if (interactive) stdout.write(`mojo-ai debug repl — model ${options.model}. /help for commands.\n`);
+  if (interactive) {
+    stdout.write(`mojo-ai debug repl — model ${options.model}. /help for commands.\n`);
+    if (options.modelRoles) stdout.write(`${options.modelRoles.map(modelRoleLine).join("\n")}\n`);
+  }
   prompt();
 
   for await (const raw of rl) {
@@ -58,6 +64,10 @@ export async function runRepl(options: ReplOptions): Promise<void> {
         stdout.write(`${JSON.stringify(harness.log.events(), null, 2)}\n`);
       } else if (cmd === "tokens") {
         stdout.write(`input=${totals.input} output=${totals.output} total=${totals.total}\n`);
+      } else if (cmd === "models") {
+        stdout.write(
+          options.modelRoles ? `${options.modelRoles.map(modelRoleLine).join("\n")}\n` : "(no roles resolved)\n",
+        );
       } else if (cmd === "inject") {
         injectFrom(harness, arg);
       } else {
