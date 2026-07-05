@@ -6,8 +6,8 @@
   "module": "index.ts",
   "main": "index.ts",
   "scripts": {
-    "start": "bun run index.ts",
-    "dev": "bun --watch run index.ts",
+    "start": "bun --env-file=../../.env --env-file=.env run index.ts",
+    "dev": "bun --env-file=../../.env --env-file=.env --watch run index.ts",
     "build": "bun build index.ts --outdir dist --target bun",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist"

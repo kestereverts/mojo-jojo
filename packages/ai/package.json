@@ -1,0 +1,29 @@
+{
+  "name": "@mojo-jojo/ai",
+  "version": "0.1.0",
+  "description": "AI brain for mojo-jojo: provider-agnostic agent loop, event-sourced context, and the mojo-ai bot module.",
+  "private": true,
+  "type": "module",
+  "module": "src/index.ts",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./mojo-ai": "./src/mojo-ai.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@ai-sdk/google": "^4.0.8",
+    "@ai-sdk/openai": "^4.0.7",
+    "@mojo-jojo/bot": "workspace:*",
+    "@mojo-jojo/irc-client": "workspace:*",
+    "ai": "^7",
+    "rxjs": "^7.8.0",
+    "zod": "^4"
+  }
+}

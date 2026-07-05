@@ -1,7 +1,7 @@
 # Repository Notes
 
 - This is a Bun workspace repo, not Node/npm. Use Bun 1.3.x; `.tool-versions` pins `bun 1.3.14` and `package.json` sets `packageManager` to `bun@1.3.14`.
-- Workspaces are `apps/*` and `packages/*`. Implemented workspaces are `@mojo-jojo/app`, `@mojo-jojo/irc-message`, `@mojo-jojo/irc-client`, and `@mojo-jojo/bot`.
+- Workspaces are `apps/*` and `packages/*`. Implemented workspaces are `@mojo-jojo/app`, `@mojo-jojo/irc-message`, `@mojo-jojo/irc-client`, `@mojo-jojo/bot`, and `@mojo-jojo/ai`.
 - `apps/app/index.ts` is the runnable bot: it `loadConfig()`s `apps/app/config.toml` and starts a `Bot`. `config.example.toml` is the annotated template; secrets come from env, not the file.
 - `packages/irc-message` is the raw IRCv3 line parser/serializer; `packages/irc-client` is the RxJS-first IRC client built on it; `packages/bot` is the modular bot framework built on the client. Each package's public API is `src/index.ts` (`@mojo-jojo/bot` additionally ships the built-in modules under the `@mojo-jojo/bot/modules` subpath export).
 - `CLAUDE.md` only delegates to this file with `@AGENTS.md`; keep repo guidance here.
@@ -16,6 +16,7 @@
 - `packages/irc-client/src/smoke.test.ts` is skipped unless `IRC_SMOKE=1`; it opens a real IRC TCP/TLS connection and accepts `IRC_SMOKE_HOST`, `IRC_SMOKE_PORT`, `IRC_SMOKE_TLS=0`, `IRC_SMOKE_TLS_INSECURE=1`, `IRC_SMOKE_CHANNEL`, plus optional `IRC_SASL_USER`/`IRC_SASL_PASS`.
 - `packages/bot/src/bot.smoke.test.ts` is skipped unless `BOT_SMOKE=1`; it boots a real `Bot` plus a second client against `#mojo2` and asserts autojoin + a live `!ping`→`pong`. Reuses the same `IRC_SMOKE_*` env. Run: `BOT_SMOKE=1 bun test src/bot.smoke.test.ts` from `packages/bot`.
 - App runtime: `bun run start` / `bun run dev` from `apps/app` reads `apps/app/config.toml` (override path with `BOT_CONFIG`).
+- Env/secrets: no dotenv package — the app scripts pass `--env-file=../../.env --env-file=.env`, so secrets live in the gitignored repo-root `.env` (with an optional `apps/app/.env` override; both files may be absent). Note `--env-file` disables Bun's automatic cwd `.env` loading, and env vars override `config.toml` for the `IRC_*`/`BOT_*` keys in `packages/bot/src/config/env.ts`; AI/tool API keys (`GEMINI_API_KEY`, `OPENAI_API_KEY`, …) are env-only.
 - There is no root `test` script, no configured lint/formatter scripts, and no CI workflows.
 
 ## TypeScript And Build
@@ -49,6 +50,13 @@
 - Modules are factories returning a `Module` (`name`, optional `parseConfig`, `setup(ctx)`). `setup` gets a `ModuleContext`: the client, RxJS streams, `destroyed$`, `track()`, `command()`, `cooldown`/`isIgnored`, namespaced `storage`, scoped `log`, and `onCleanup`. Subscriptions are torn down on dispose; per-connection work must hang off the `registered` lifecycle event (modules persist across reconnects).
 - Built-in modules (`src/modules/`): `ping`, `help`, `admin` (owner-only; `!raw` opt-in), `ctcp` (rate-limited), `autojoin` (reconnect-safe). `builtinModules` seeds the default registry; external modules come from config `externalModules` (dynamically imported — config is a trust boundary equal to bot code).
 - Commands run through a single bounded RxJS PRIVMSG pipeline (`CommandRouter`): cheap parse/lookup/ignore/permission gating, then an `#inFlight` concurrency cap that drops on saturation; per-handler timeout; cooldown after admission. Replies go through `safeSay`/`safeNotice` (the client's `send()` throws synchronously on bad input). One `Bot` = one network.
+
+## AI Package
+
+- `packages/ai` (`@mojo-jojo/ai`) is the LLM brain (skeleton). Provider access goes through the Vercel AI SDK (`ai` v7) with direct provider packages; config `model` is a `"provider/model-id"` spec (default `openai/gpt-5.4-mini`) resolved in `src/models.ts` (`google` → `@ai-sdk/google` keyed by `GEMINI_API_KEY`, `openai` → `@ai-sdk/openai` keyed by `OPENAI_API_KEY`).
+- Architecture: durable per-conversation memory is an append-only log of typed `ContextEvent`s; the prompt is a projection (`renderPrompt(log, turn)`) computed per model call; ephemeral turn-scoped context (`TurnContext`) is rendered into the live prompt only and never appended to the log. Keep this single-render-path invariant.
+- The agent loop (`runExchange`) is plain async/await on `ToolLoopAgent`; RxJS owns turn orchestration in the `mojo-ai` bot module (`src/mojo-ai.ts`): only channel lines addressing the bot (`nick:`/`nick,`) are recorded or sent to the model — no ambient chatter, no PMs — one exchange at a time per conversation.
+- The module is wired as an external module by path (`externalModules = ["../../packages/ai/src/mojo-ai.ts"]` in `apps/app/config.toml`) — Bun's isolated `node_modules` keep a bare `@mojo-jojo/ai` specifier from resolving inside `@mojo-jojo/bot`'s dynamic `import()`.
 
 ## Agent Files
 

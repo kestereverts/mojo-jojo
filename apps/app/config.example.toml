@@ -12,7 +12,9 @@
 # specifiers. Listing one registers AND enables it; its [modules.<name>] table (if any)
 # supplies options. Each is dynamically imported and runs with full process privilege —
 # treat this config file as trusted as the bot's own code.
-externalModules = []
+# The AI brain ships as a workspace package; Bun's isolated node_modules keep bare
+# specifiers from resolving inside @mojo-jojo/bot's dynamic import, so use a path.
+externalModules = ["../../packages/ai/src/mojo-ai.ts"]
 
 [server]
 host = "irc.example.org"
@@ -65,3 +67,11 @@ channels = ["#mojo2"]
 # delayMs = 0
 # [modules.autojoin.keys]
 # "#secret" = "hunter2"
+
+# The LLM chat brain (@mojo-jojo/ai). `model` is "provider/model-id"; providers:
+# google (GEMINI_API_KEY) and openai (OPENAI_API_KEY). Keys come from env, never this file.
+[modules.mojo-ai]
+model = "openai/gpt-5.4-mini"
+# historyLimit = 200 # per-conversation memory window (context events)
+# maxSteps = 8       # tool-loop iterations per exchange
+# replyLines = 3     # max IRC lines per reply
