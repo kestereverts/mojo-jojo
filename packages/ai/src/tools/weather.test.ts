@@ -63,6 +63,32 @@ describe("weather_forecast", () => {
     expect(result.nextHours.map((h: any) => h.time)).toEqual(["2026-07-06T23:00", "2026-07-07T00:00", "2026-07-07T01:00"]);
   });
 
+  test("a sub-hour current.time (Open-Meteo's real 15-minute resolution) still starts at the CURRENT hour, not the next one", async () => {
+    // Real Open-Meteo `current.time` is e.g. "…T07:30", not hour-aligned. A
+    // naive `>= current.time` match would skip 07:00 and wrongly start at
+    // 08:00, dropping the in-progress hour — this is the exact bug caught in
+    // adversarial review (the earlier fixture tests only used hour-aligned
+    // times, which happened to mask it).
+    globalThis.fetch = mockFetch(GEOCODE_OK, {
+      current: { time: "2026-07-06T07:30", temperature_2m: 20, apparent_temperature: 20, relative_humidity_2m: 55, wind_speed_10m: 8, weather_code: 1 },
+      hourly: {
+        time: ["2026-07-06T06:00", "2026-07-06T07:00", "2026-07-06T08:00", "2026-07-06T09:00", "2026-07-06T10:00"],
+        temperature_2m: [18, 19, 20, 21, 22],
+        weather_code: [1, 1, 1, 2, 2],
+      },
+      daily: { sunrise: ["2026-07-06T05:00"], sunset: ["2026-07-06T19:00"] },
+    });
+
+    const result = (await execute({ location: "Tokyo" }, {} as never)) as any;
+    expect(result.nextHours[0].time).toBe("2026-07-06T07:00");
+    expect(result.nextHours.map((h: any) => h.time)).toEqual([
+      "2026-07-06T07:00",
+      "2026-07-06T08:00",
+      "2026-07-06T09:00",
+      "2026-07-06T10:00",
+    ]);
+  });
+
   test("imperial unit passes fahrenheit/mph to the forecast request", async () => {
     let forecastUrl = "";
     globalThis.fetch = (async (url: string) => {

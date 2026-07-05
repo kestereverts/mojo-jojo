@@ -6,12 +6,16 @@ import type { ToolDefinition } from "./define.ts";
 interface GeocodeResponse {
   readonly status: string;
   readonly results: readonly { formatted_address: string; geometry: { location: { lat: number; lng: number } } }[];
+  // Geocoding uses snake_case for this field (the Time Zone API below uses
+  // camelCase for the equivalent — an inconsistency in Google's own APIs,
+  // verified against both APIs' docs, not assumed).
+  readonly error_message?: string;
 }
 
 interface TimezoneResponse {
   readonly status: string;
   readonly timeZoneId?: string;
-  readonly error_message?: string;
+  readonly errorMessage?: string;
 }
 
 function requireApiKey(): string {
@@ -26,7 +30,8 @@ async function geocode(location: string): Promise<{ lat: number; lng: number; fo
   const data = await fetchJson<GeocodeResponse>(url);
   const first = data.results[0];
   if (data.status !== "OK" || !first) {
-    throw new Error(`could not find a location matching "${location}" (${data.status})`);
+    const detail = data.error_message ? `: ${data.error_message}` : "";
+    throw new Error(`could not find a location matching "${location}" (${data.status})${detail}`);
   }
   return { lat: first.geometry.location.lat, lng: first.geometry.location.lng, formattedAddress: first.formatted_address };
 }
@@ -37,7 +42,7 @@ async function timezoneFor(lat: number, lng: number): Promise<string> {
   const url = `https://maps.googleapis.com/maps/api/timezone/json?location=${lat},${lng}&timestamp=${timestamp}&key=${key}`;
   const data = await fetchJson<TimezoneResponse>(url);
   if (data.status !== "OK" || !data.timeZoneId) {
-    const detail = data.error_message ? `: ${data.error_message}` : "";
+    const detail = data.errorMessage ? `: ${data.errorMessage}` : "";
     throw new Error(`could not resolve a timezone for this location (${data.status})${detail}`);
   }
   return data.timeZoneId;

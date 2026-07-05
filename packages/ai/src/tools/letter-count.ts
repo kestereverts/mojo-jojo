@@ -24,7 +24,11 @@ export function letterCountTool(): ToolDefinition {
         for (const { segment } of segmenter.segment(text)) {
           textLength++;
           if (!/\p{L}/u.test(segment)) continue;
-          const key = segment.toLowerCase();
+          // NFC-normalize before lowercasing: a precomposed "é" (one code
+          // point) and a decomposed "e"+combining-acute (two) are the same
+          // letter to a user, but would otherwise key the frequency map
+          // separately.
+          const key = segment.normalize("NFC").toLowerCase();
           frequencies[key] = (frequencies[key] ?? 0) + 1;
           letterCount++;
         }

@@ -64,6 +64,13 @@ describe("local_time", () => {
     expect(execute({ location: "Nowhereville" }, {} as never)).rejects.toThrow(/ZERO_RESULTS/);
   });
 
+  test("surfaces the geocoder's error_message (snake_case — the real field name) for a diagnosable failure", async () => {
+    process.env.GOOGLE_MAPS_API_KEY = "test-key";
+    globalThis.fetch = (async () =>
+      jsonResponse({ status: "REQUEST_DENIED", results: [], error_message: "The provided API key is invalid." })) as unknown as typeof fetch;
+    expect(execute({ location: "X" }, {} as never)).rejects.toThrow(/The provided API key is invalid\./);
+  });
+
   test("throws with the timezone API's status when it fails after a successful geocode", async () => {
     process.env.GOOGLE_MAPS_API_KEY = "test-key";
     globalThis.fetch = (async (url: string) => {
@@ -73,5 +80,16 @@ describe("local_time", () => {
       return jsonResponse({ status: "OVER_QUERY_LIMIT" });
     }) as unknown as typeof fetch;
     expect(execute({ location: "X" }, {} as never)).rejects.toThrow(/OVER_QUERY_LIMIT/);
+  });
+
+  test("surfaces the timezone API's errorMessage (camelCase — a different convention than the geocoder's, verified against Google's own docs)", async () => {
+    process.env.GOOGLE_MAPS_API_KEY = "test-key";
+    globalThis.fetch = (async (url: string) => {
+      if (url.includes("/geocode/")) {
+        return jsonResponse({ status: "OK", results: [{ formatted_address: "X", geometry: { location: { lat: 0, lng: 0 } } }] });
+      }
+      return jsonResponse({ status: "REQUEST_DENIED", errorMessage: "The provided API key is invalid." });
+    }) as unknown as typeof fetch;
+    expect(execute({ location: "X" }, {} as never)).rejects.toThrow(/The provided API key is invalid\./);
   });
 });

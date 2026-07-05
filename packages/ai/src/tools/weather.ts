@@ -67,10 +67,35 @@ async function geocode(location: string): Promise<{ lat: number; lng: number; na
   };
 }
 
-/** Index of the first hourly row at/after `current.time` — fixes mojo-ai3's `currentHour + i` array-index bug, which broke near midnight/DST when the array didn't align with the wall-clock hour. */
+/**
+ * Index of the LAST hourly row at/before `current.time` — the row
+ * representing the hour we're currently in. Fixes mojo-ai3's `currentHour + i`
+ * array-index bug, which broke near midnight/DST when the array didn't align
+ * with the wall-clock hour.
+ *
+ * Deliberately `<=`, not `>=`: Open-Meteo's `current.time` carries sub-hour
+ * (15-minute) precision (e.g. `"…T07:30"`), while `hourly.time` rows are
+ * always on the hour. A `>=` match against a mid-hour `current.time` would
+ * skip straight to the NEXT hour, dropping the in-progress current hour from
+ * the "next N hours" window (a real bug caught in review — the naive `>=`
+ * version happened to only get tested against hour-aligned fixtures).
+ *
+ * Requesting `forecast_days=2` (not `1`) is what makes the fallback safe:
+ * `current.time` always falls within the FIRST day of that 2-day window (an
+ * Open-Meteo forecast always starts at local midnight *today*, and "now" is
+ * always in "today"), so there are always ≥24 hourly rows at/after the
+ * current hour to slice into — a single day's array ending at 23:00 would
+ * otherwise come up short for a "next 4 hours" query late in the day.
+ */
 function currentHourIndex(hourly: readonly string[], currentTimeIso: string): number {
   const currentMs = new Date(currentTimeIso).getTime();
-  const idx = hourly.findIndex((t) => new Date(t).getTime() >= currentMs);
+  let idx = -1;
+  for (let i = 0; i < hourly.length; i++) {
+    if (new Date(hourly[i]!).getTime() > currentMs) break; // hourly.time is sorted ascending
+    idx = i;
+  }
+  // Every row is after "now" — shouldn't happen given forecast_days=2 always
+  // covers today, but start from the first available row rather than guessing.
   return idx === -1 ? 0 : idx;
 }
 
@@ -98,7 +123,7 @@ export function weatherForecastTool(): ToolDefinition {
         const url =
           `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
           `&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code` +
-          `&hourly=temperature_2m,weather_code&daily=sunrise,sunset&timezone=auto&forecast_days=1` +
+          `&hourly=temperature_2m,weather_code&daily=sunrise,sunset&timezone=auto&forecast_days=2` +
           `&temperature_unit=${temperatureUnit}&wind_speed_unit=${windSpeedUnit}`;
         const data = await fetchJson<ForecastResponse>(url);
 
