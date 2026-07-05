@@ -33,7 +33,14 @@ export interface ExchangeOptions {
 export interface ExchangeToolCall {
   readonly toolName: string;
   readonly input: unknown;
+  /** The tool's result, when execution succeeded. */
   readonly output?: unknown;
+  /**
+   * The thrown error, when execution failed. In AI SDK v7 a failed tool
+   * execution is a `tool-error` content part (not a `toolResults` entry), so a
+   * call surfaces exactly one of `output` / `error`.
+   */
+  readonly error?: unknown;
 }
 
 /** A single model-call step of the tool loop. */
@@ -99,6 +106,11 @@ export async function runExchange(
 
   const steps: ExchangeStep[] = result.steps.map((step, index) => {
     const outputByCallId = new Map(step.toolResults.map((r) => [r.toolCallId, r.output]));
+    // Failed tool executions are `tool-error` content parts, not `toolResults`.
+    const errorByCallId = new Map<string, unknown>();
+    for (const part of step.content) {
+      if (part.type === "tool-error") errorByCallId.set(part.toolCallId, part.error);
+    }
     return {
       index,
       text: step.text,
@@ -107,6 +119,7 @@ export async function runExchange(
         toolName: call.toolName,
         input: call.input,
         output: outputByCallId.get(call.toolCallId),
+        error: errorByCallId.get(call.toolCallId),
       })),
       usage: step.usage,
       stepTimeMs: step.performance.stepTimeMs,

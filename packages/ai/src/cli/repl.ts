@@ -6,6 +6,7 @@ import { formatHuman } from "./inspect.ts";
 export interface ReplOptions extends ChatOptions {
   readonly model: string;
   readonly maxSteps?: number;
+  readonly replyLines?: number;
   readonly verbose?: boolean;
 }
 
@@ -29,14 +30,19 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   // Async iteration (not `question`) so the loop drains piped input in order and
   // ends cleanly on EOF instead of throwing "readline was closed".
   const rl = readline.createInterface({ input: stdin, output: stdout, prompt: "» " });
+  // Only decorate interactively; piped stdout stays clean for parsing.
+  const interactive = stdout.isTTY === true;
+  const prompt = () => {
+    if (interactive) rl.prompt();
+  };
 
-  stdout.write(`mojo-ai debug repl — model ${options.model}. /help for commands.\n`);
-  rl.prompt();
+  if (interactive) stdout.write(`mojo-ai debug repl — model ${options.model}. /help for commands.\n`);
+  prompt();
 
   for await (const raw of rl) {
     const line = raw.trim();
     if (line.length === 0) {
-      rl.prompt();
+      prompt();
       continue;
     }
 
@@ -57,7 +63,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
       } else {
         stdout.write(`unknown command: /${cmd} (/help)\n`);
       }
-      rl.prompt();
+      prompt();
       continue;
     }
 
@@ -68,14 +74,18 @@ export async function runRepl(options: ReplOptions): Promise<void> {
       totals.total += outcome.result.usage.totalTokens ?? 0;
     }
     stdout.write(`${formatHuman(outcome, { verbose: options.verbose })}\n\n`);
-    rl.prompt();
+    prompt();
   }
 
   rl.close();
 }
 
 function newHarness(options: ReplOptions): DebugHarness {
-  return new DebugHarness({ model: options.model, maxSteps: options.maxSteps });
+  return new DebugHarness({
+    model: options.model,
+    maxSteps: options.maxSteps,
+    replyLines: options.replyLines,
+  });
 }
 
 function injectFrom(harness: DebugHarness, json: string): void {

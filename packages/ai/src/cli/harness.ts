@@ -12,8 +12,9 @@ import { DEFAULT_INSTRUCTIONS } from "../persona.ts";
  * instructions, the tool set — and drives the *same* {@link runExchange}, with
  * no IRC connection and no `Bot`. So it is not a divergent build path: an
  * exchange here renders and runs through exactly the functions the module uses.
- * Only the module's RxJS turn orchestration (which is the IRC-coupled part) is
- * absent, replaced by a direct `await`.
+ * The IRC-coupled parts are absent: the module's RxJS turn orchestration
+ * (replaced by a direct `await`) and its per-line transport admission (see
+ * {@link DebugHarness.chat}).
  */
 export interface HarnessConfig {
   /** `"provider/model-id"` spec or an injected `LanguageModel` (mock, for tests). */
@@ -87,8 +88,13 @@ export class DebugHarness {
 
   /**
    * Run one full exchange: record the incoming line, project + run the tool
-   * loop, then record the delivered reply — the same sequence the module's
-   * `deliver` performs, minus the IRC send.
+   * loop, then record the capped reply. This mirrors the module's `deliver`
+   * *delivery shaping* (the `toReplyLines` cap) but not IRC *transport
+   * admission*: the live path additionally drops individual lines that
+   * `safeSay` rejects (CR/LF/NUL, over-512-byte wire line, full outbound queue)
+   * and records only the admitted lines. Those failures depend on live
+   * transport state and target framing, so headless they cannot be reproduced
+   * — the harness records the intended (capped) reply instead.
    */
   async chat(text: string, options: ChatOptions = {}): Promise<ChatOutcome> {
     const replyLines = this.#config.replyLines ?? DEFAULTS.replyLines;

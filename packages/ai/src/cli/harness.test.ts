@@ -47,7 +47,9 @@ describe("DebugHarness.chat", () => {
     expect(outcome.history.some((e) => JSON.stringify(e).includes("runtime_context"))).toBe(false);
   });
 
-  test("caps delivered lines at replyLines and records only what was delivered", async () => {
+  test("caps delivered lines at replyLines and records the capped reply", async () => {
+    // NB: this models delivery shaping (the line cap), not IRC transport
+    // admission (the live path's per-line safeSay filter) — see DebugHarness.chat.
     const h = new DebugHarness({ model: textModel("l1\nl2\nl3\nl4"), replyLines: 2, tools: {} });
     const outcome = await h.chat("go");
     expect(outcome.replyLines).toEqual(["l1", "l2"]);

@@ -73,71 +73,132 @@ export async function main(argv: string[]): Promise<number> {
   if (values.via !== undefined) stderr.write("note: --via is recognized but not wired until M3.\n");
   if (values.db !== undefined) stderr.write("note: --db is recognized but not wired until M8.\n");
 
-  const cliConfig = values.config ? await loadCliConfig(values.config) : {};
-  const model = values.model ?? cliConfig.model ?? DEFAULT_MODEL;
-  const maxSteps = values["max-steps"] ? parsePositiveInt(values["max-steps"], "--max-steps") : cliConfig.maxSteps;
+  // Config load + flag validation raise UsageError → a clean exit 2 (not the
+  // bin-level fatal-stack path). Exchange/network failures are handled inside
+  // the harness (captured in the outcome, exit 1).
+  try {
+    const cliConfig = values.config ? await loadCliConfig(values.config) : {};
+    const model = values.model ?? cliConfig.model ?? DEFAULT_MODEL;
+    const maxSteps =
+      values["max-steps"] !== undefined
+        ? parsePositiveInt(values["max-steps"], "--max-steps")
+        : cliConfig.maxSteps;
 
-  if (command === "chat") {
-    const message = rest.join(" ").trim();
-    if (!message) {
-      stderr.write(`chat needs a message.\n\n${USAGE}\n`);
+    if (command === "chat") {
+      const message = rest.join(" ").trim();
+      if (!message) {
+        stderr.write(`chat needs a message.\n\n${USAGE}\n`);
+        return 2;
+      }
+      const harness = new DebugHarness({ model, maxSteps, replyLines: cliConfig.replyLines });
+      if (values.inject) {
+        for (const event of await readInjectFile(values.inject)) harness.inject(event);
+      }
+      const outcome = await harness.chat(message, {
+        as: values.as,
+        account: values.account,
+        conversation: values.conversation,
+      });
+      stdout.write(`${values.json ? formatJson(outcome) : formatHuman(outcome, { verbose: values.verbose })}\n`);
+      return outcome.error ? 1 : 0;
+    }
+
+    if (command === "repl") {
+      await runRepl({
+        model,
+        maxSteps,
+        replyLines: cliConfig.replyLines,
+        as: values.as,
+        account: values.account,
+        conversation: values.conversation,
+        verbose: values.verbose,
+      });
+      return 0;
+    }
+
+    if (command === "inject") {
+      stderr.write(
+        "inject as a standalone command needs --db to persist (lands in M8).\n" +
+          "For now use `chat --inject <file>` or the repl `/inject` command.\n",
+      );
       return 2;
     }
-    const harness = new DebugHarness({ model, maxSteps, replyLines: cliConfig.replyLines });
-    if (values.inject) {
-      const raw: unknown = JSON.parse(await Bun.file(values.inject).text());
-      for (const event of parseContextEvents(raw)) harness.inject(event);
-    }
-    const outcome = await harness.chat(message, {
-      as: values.as,
-      account: values.account,
-      conversation: values.conversation,
-    });
-    stdout.write(`${values.json ? formatJson(outcome) : formatHuman(outcome, { verbose: values.verbose })}\n`);
-    return outcome.error ? 1 : 0;
-  }
 
-  if (command === "repl") {
-    await runRepl({
-      model,
-      maxSteps,
-      as: values.as,
-      account: values.account,
-      conversation: values.conversation,
-      verbose: values.verbose,
-    });
-    return 0;
-  }
-
-  if (command === "inject") {
-    stderr.write(
-      "inject as a standalone command needs --db to persist (lands in M8).\n" +
-        "For now use `chat --inject <file>` or the repl `/inject` command.\n",
-    );
+    stderr.write(`unknown command: ${command}\n\n${USAGE}\n`);
     return 2;
+  } catch (cause) {
+    if (cause instanceof UsageError) {
+      stderr.write(`${cause.message}\n`);
+      return 2;
+    }
+    throw cause;
   }
+}
 
-  stderr.write(`unknown command: ${command}\n\n${USAGE}\n`);
-  return 2;
+/** A user-input error (bad flag, unreadable/invalid config or inject file) → exit 2. */
+class UsageError extends Error {}
+
+async function readInjectFile(path: string) {
+  let text: string;
+  try {
+    text = await Bun.file(path).text();
+  } catch {
+    throw new UsageError(`--inject: cannot read file "${path}"`);
+  }
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch (cause) {
+    throw new UsageError(`--inject: invalid JSON in "${path}": ${errMsg(cause)}`);
+  }
+  try {
+    return parseContextEvents(raw);
+  } catch (cause) {
+    throw new UsageError(`--inject: ${errMsg(cause)}`);
+  }
 }
 
 async function loadCliConfig(path: string): Promise<CliConfig> {
-  const raw: unknown = Bun.TOML.parse(await Bun.file(path).text());
+  let text: string;
+  try {
+    text = await Bun.file(path).text();
+  } catch {
+    throw new UsageError(`--config: cannot read file "${path}"`);
+  }
+  let raw: unknown;
+  try {
+    raw = Bun.TOML.parse(text);
+  } catch (cause) {
+    throw new UsageError(`--config: invalid TOML in "${path}": ${errMsg(cause)}`);
+  }
   const modules = (raw as { modules?: Record<string, unknown> }).modules;
   const slice = modules?.["mojo-ai"];
   if (typeof slice !== "object" || slice === null) return {};
   const s = slice as Record<string, unknown>;
+  // Same bounds the module's Validator enforces, so CLI and live agree.
   return {
     model: typeof s.model === "string" ? s.model : undefined,
-    maxSteps: typeof s.maxSteps === "number" ? s.maxSteps : undefined,
-    replyLines: typeof s.replyLines === "number" ? s.replyLines : undefined,
+    maxSteps: intInRange(s.maxSteps, "modules.mojo-ai.maxSteps", 1, 32),
+    replyLines: intInRange(s.replyLines, "modules.mojo-ai.replyLines", 1, 10),
   };
+}
+
+function intInRange(value: unknown, path: string, min: number, max: number): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    throw new UsageError(`${path} must be an integer in [${min}, ${max}], got ${JSON.stringify(value)}`);
+  }
+  return value;
 }
 
 function parsePositiveInt(value: string, flag: string): number {
   const n = Number(value);
-  if (!Number.isInteger(n) || n <= 0) throw new Error(`${flag} must be a positive integer, got "${value}"`);
+  if (!Number.isInteger(n) || n <= 0) throw new UsageError(`${flag} must be a positive integer, got "${value}"`);
   return n;
+}
+
+function errMsg(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 // Entry point when run directly (bun run / bin), not when imported by tests.

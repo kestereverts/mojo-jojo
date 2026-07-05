@@ -41,7 +41,7 @@ interface StepInspection {
   readonly index: number;
   readonly finishReason: string;
   readonly text: string;
-  readonly toolCalls: { toolName: string; input: unknown; output: unknown }[];
+  readonly toolCalls: { toolName: string; input: unknown; output: unknown; error: string | null }[];
 }
 
 export function buildInspection(outcome: ChatOutcome): Inspection {
@@ -110,11 +110,10 @@ export function formatHuman(outcome: ChatOutcome, opts: { verbose?: boolean } = 
         s.toolCalls.length === 0
           ? "  (no tool calls)"
           : s.toolCalls
-              .map(
-                (c) =>
-                  `  → ${c.toolName}(${compact(c.input)})` +
-                  (c.output === undefined ? "" : ` = ${compact(c.output)}`),
-              )
+              .map((c) => {
+                const result = c.error !== null ? ` ✗ ${c.error}` : ` = ${compact(c.output)}`;
+                return `  → ${c.toolName}(${compact(c.input)})${result}`;
+              })
               .join("\n");
       return `step ${s.index} [${s.finishReason}]\n${calls}`;
     });
@@ -140,8 +139,19 @@ function inspectStep(step: ExchangeStep): StepInspection {
     index: step.index,
     finishReason: step.finishReason,
     text: step.text,
-    toolCalls: step.toolCalls.map((c) => ({ toolName: c.toolName, input: c.input, output: c.output })),
+    toolCalls: step.toolCalls.map((c) => ({
+      toolName: c.toolName,
+      input: c.input,
+      output: c.output ?? null,
+      // Errors are often `Error` instances (JSON.stringify → "{}"), so render a message.
+      error: c.error === undefined ? null : errorText(c.error),
+    })),
   };
+}
+
+/** A one-line human-readable message for a thrown tool error. */
+function errorText(error: unknown): string {
+  return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 }
 
 function tokenUsage(usage: { inputTokens?: number; outputTokens?: number; totalTokens?: number }): TokenUsage {
