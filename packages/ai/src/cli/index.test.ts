@@ -83,3 +83,33 @@ describe("main — usage & validation exit codes (no network)", () => {
     expect(r.err).toContain("modules.mojo-ai: expected a table");
   });
 });
+
+describe("main — tools command (network-free registry inspection)", () => {
+  test("lists every default tool with its guidance, none marked [durable] in M4's batch", async () => {
+    const r = await run(["tools"]);
+    expect(r.code).toBe(0);
+    for (const name of ["letter_count", "local_time", "currency_convert", "weather_forecast", "wolfram_alpha"]) {
+      expect(r.out).toContain(name);
+    }
+    expect(r.out).not.toContain("[durable]");
+  });
+
+  test("--config's tools.disabled actually removes a tool from the listing — the CLI/live parity this milestone exists for", async () => {
+    const cfg = await tmpConfig('[modules.mojo-ai.tools]\ndisabled = ["currency_convert"]\n');
+    const r = await run(["tools", "--config", cfg]);
+    expect(r.code).toBe(0);
+    expect(r.out).not.toContain("currency_convert");
+    expect(r.out).toContain("letter_count"); // other tools unaffected
+  });
+
+  test("--json emits a stable, parseable shape", async () => {
+    const r = await run(["tools", "--json"]);
+    const parsed = JSON.parse(r.out);
+    expect(Array.isArray(parsed.tools)).toBe(true);
+    const names = parsed.tools.map((t: { name: string }) => t.name);
+    expect(names).toContain("wolfram_alpha");
+    const wolfram = parsed.tools.find((t: { name: string }) => t.name === "wolfram_alpha");
+    expect(wolfram.durableTranscript).toBe(false);
+    expect(typeof wolfram.guidance).toBe("string");
+  });
+});

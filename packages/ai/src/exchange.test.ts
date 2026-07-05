@@ -4,7 +4,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import { z } from "zod";
 import { InMemoryContextLog } from "./context/log.ts";
 import type { TurnContext } from "./context/events.ts";
-import { runExchange } from "./exchange.ts";
+import { recordDurableTranscripts, runExchange } from "./exchange.ts";
 
 const TURN: TurnContext = { nowUtc: "2026-01-01T00:00:00.000Z", conversation: "#t", guidance: [] };
 
@@ -103,5 +103,63 @@ describe("runExchange step mapping", () => {
     const result = await runExchange(logWith("hello"), TURN, { model, instructions: "x", tools: {}, maxSteps: 2 });
     expect(result.prompt.length).toBeGreaterThan(0);
     expect(String(result.prompt.at(-1)?.content)).toContain("conversation: #t");
+  });
+});
+
+describe("recordDurableTranscripts", () => {
+  const NOW = () => new Date("2026-02-02T00:00:00.000Z");
+
+  test("records a successful call to a durable-flagged tool", async () => {
+    const echo = tool({
+      description: "echo",
+      inputSchema: z.object({ n: z.number() }),
+      execute: async ({ n }) => ({ doubled: n * 2 }),
+    });
+    const model = new MockLanguageModelV4({ doGenerate: [toolCallStep("echo", { n: 5 }), textStep("done")] });
+    const log = logWith("go");
+    const result = await runExchange(log, TURN, { model, instructions: "x", tools: { echo }, maxSteps: 4 });
+
+    recordDurableTranscripts(log, result, new Set(["echo"]), NOW);
+
+    const transcript = log.events().find((e) => e.kind === "tool-transcript");
+    expect(transcript).toMatchObject({
+      kind: "tool-transcript",
+      tool: "echo",
+      input: { n: 5 },
+      output: { doubled: 10 },
+      at: NOW().toISOString(),
+    });
+  });
+
+  test("does not record a call to a tool not in durableNames", async () => {
+    const echo = tool({
+      description: "echo",
+      inputSchema: z.object({ n: z.number() }),
+      execute: async ({ n }) => ({ doubled: n * 2 }),
+    });
+    const model = new MockLanguageModelV4({ doGenerate: [toolCallStep("echo", { n: 5 }), textStep("done")] });
+    const log = logWith("go");
+    const result = await runExchange(log, TURN, { model, instructions: "x", tools: { echo }, maxSteps: 4 });
+
+    recordDurableTranscripts(log, result, new Set(["some_other_tool"]), NOW);
+
+    expect(log.events().some((e) => e.kind === "tool-transcript")).toBe(false);
+  });
+
+  test("never records a failed call, even if the tool is durable-flagged", async () => {
+    const boom = tool({
+      description: "always throws",
+      inputSchema: z.object({ reason: z.string() }),
+      execute: async (): Promise<{ ok: boolean }> => {
+        throw new Error("kaboom");
+      },
+    });
+    const model = new MockLanguageModelV4({ doGenerate: [toolCallStep("boom", { reason: "x" }), textStep("recovered")] });
+    const log = logWith("go");
+    const result = await runExchange(log, TURN, { model, instructions: "x", tools: { boom }, maxSteps: 4 });
+
+    recordDurableTranscripts(log, result, new Set(["boom"]), NOW);
+
+    expect(log.events().some((e) => e.kind === "tool-transcript")).toBe(false);
   });
 });

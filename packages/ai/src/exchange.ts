@@ -80,8 +80,8 @@ export interface ExchangeResult {
  * log — the caller appends the reply *as actually sent* (post-truncation), so
  * memory always matches what users saw.
  *
- * TODO(next): validators (reject-and-retry on ungrounded replies), durable
- * tool transcripts, subagents, streaming via `agent.stream()`.
+ * TODO(next): validators (reject-and-retry on ungrounded replies), subagents,
+ * streaming via `agent.stream()`.
  */
 export async function runExchange(
   log: ContextLog,
@@ -135,4 +135,27 @@ export async function runExchange(
     finishReason: result.finishReason,
     wallMs,
   };
+}
+
+/**
+ * Append a {@link ToolTranscriptEvent} for every successful call to a
+ * `durableTranscript`-flagged tool. Called once, identically, by both the
+ * live module and the debug harness right after `runExchange` resolves — the
+ * same "single call site" discipline as `buildDefaultInstructions`, so live
+ * and CLI can never silently disagree on which tool results get remembered.
+ * A failed call (`error` set) is never recorded — memory should reflect what
+ * actually happened, not a call that didn't produce a usable result.
+ */
+export function recordDurableTranscripts(
+  log: ContextLog,
+  result: ExchangeResult,
+  durableNames: ReadonlySet<string>,
+  now: () => Date = () => new Date(),
+): void {
+  for (const step of result.steps) {
+    for (const call of step.toolCalls) {
+      if (call.error !== undefined || !durableNames.has(call.toolName)) continue;
+      log.append({ kind: "tool-transcript", at: now().toISOString(), tool: call.toolName, input: call.input, output: call.output });
+    }
+  }
 }

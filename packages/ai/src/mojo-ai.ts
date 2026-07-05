@@ -11,9 +11,9 @@ import {
 } from "@mojo-jojo/bot";
 import type { PrivmsgEvent } from "@mojo-jojo/irc-client";
 import { InMemoryContextLog, type ContextLog } from "./context/log.ts";
-import { runExchange } from "./exchange.ts";
+import { recordDurableTranscripts, runExchange } from "./exchange.ts";
 import { toReplyLines } from "./reply.ts";
-import { defaultTools } from "./tools.ts";
+import { buildToolSet, defaultToolDefinitions } from "./tools/index.ts";
 import type { ModelRoles } from "./models.ts";
 import { runChatMiddleware, type ChatMessage, type ChatMiddleware } from "./identity/middleware.ts";
 import { createRelayMiddleware, parseRelays, type RelayDefinition } from "./identity/relay.ts";
@@ -47,6 +47,8 @@ interface MojoAiConfig {
    * not silently missing known-user data.
    */
   readonly friendsFile?: string;
+  /** Tool names to exclude from the registry entirely — no entry, no guidance, never durable. */
+  readonly toolsDisabled: readonly string[];
 }
 
 /**
@@ -108,8 +110,10 @@ export function mojoAiModule(): Module<MojoAiConfig> {
       const replyLines = v.optIntegerInRange(raw.replyLines, "modules.mojo-ai.replyLines", 1, 10) ?? 3;
       const relays = parseRelays(v, raw.relays, "modules.mojo-ai.relays");
       const friendsFile = v.optNonEmptyString(raw.friendsFile, "modules.mojo-ai.friendsFile");
+      const toolsRaw = v.optRecord(raw.tools, "modules.mojo-ai.tools") ?? {};
+      const toolsDisabled = v.optStringArray(toolsRaw.disabled, "modules.mojo-ai.tools.disabled") ?? [];
       v.throwIfAny();
-      return { models, historyLimit, maxSteps, replyLines, relays, friendsFile };
+      return { models, historyLimit, maxSteps, replyLines, relays, friendsFile, toolsDisabled };
     },
     async setup(ctx) {
       const logs = new Map<string, ContextLog>();
@@ -117,7 +121,8 @@ export function mojoAiModule(): Module<MojoAiConfig> {
       ctx.onCleanup(() => aborter.abort());
 
       const friends = await loadFriends(ctx);
-      const instructions = buildDefaultInstructions(friends);
+      const { tools, guidance, durableNames } = buildToolSet(defaultToolDefinitions(), ctx.config.toolsDisabled);
+      const instructions = buildDefaultInstructions(friends, guidance);
 
       const middlewareChain: ChatMiddleware[] = [
         createRelayMiddleware(ctx.config.relays, () => ctx.client.server?.caseMapper ?? null),
@@ -201,13 +206,16 @@ export function mojoAiModule(): Module<MojoAiConfig> {
                       {
                         model: ctx.config.models.chat,
                         instructions,
-                        tools: defaultTools(),
+                        tools,
                         maxSteps: ctx.config.maxSteps,
                         signal: aborter.signal,
                       },
                     ),
                   ).pipe(
-                    map((result) => ({ msg, reply: result.text })),
+                    map((result) => {
+                      recordDurableTranscripts(logFor(convoKey(msg.raw)), result, durableNames);
+                      return { msg, reply: result.text };
+                    }),
                     catchError((error) => {
                       ctx.log.warn(`exchange failed in ${convoKey(msg.raw)}`, error);
                       return EMPTY;

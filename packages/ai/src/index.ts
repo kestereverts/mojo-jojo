@@ -14,6 +14,7 @@ export { InMemoryContextLog, type ContextLog } from "./context/log.ts";
 export { renderPrompt } from "./context/render.ts";
 export {
   runExchange,
+  recordDurableTranscripts,
   type ExchangeOptions,
   type ExchangeResult,
   type ExchangeStep,
@@ -21,7 +22,16 @@ export {
 } from "./exchange.ts";
 export { toReplyLines } from "./reply.ts";
 export { resolveModel, resolveEmbeddingModel, type ModelRoles } from "./models.ts";
-export { defaultTools } from "./tools.ts";
+export { buildToolSet, defaultToolDefinitions, type ToolRegistryResult } from "./tools/index.ts";
+export type { ToolDefinition } from "./tools/define.ts";
+export { fetchJson, fetchText, type FetchLimits } from "./tools/http.ts";
+export { TtlCache } from "./tools/cache.ts";
+export { DailyQuota } from "./tools/quota.ts";
+export { letterCountTool } from "./tools/letter-count.ts";
+export { localTimeTool } from "./tools/local-time.ts";
+export { currencyConvertTool } from "./tools/currency.ts";
+export { weatherForecastTool } from "./tools/weather.ts";
+export { wolframAlphaTool } from "./tools/wolfram.ts";
 export {
   runChatMiddleware,
   type ChatMessage,

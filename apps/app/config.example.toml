@@ -100,3 +100,9 @@ chat = "openai/gpt-5.4-mini"
 # [[modules.mojo-ai.relays]]
 # nick = "Discord"
 # pattern = '^<(?<author>.+?)> (?<text>.*)$'
+
+# Built-in tools: letter_count, local_time, currency_convert, weather_forecast,
+# wolfram_alpha (research_topic/web_search/paste/places_search land M5-M6).
+# A disabled tool disappears entirely: no entry, no guidance, never durable.
+[modules.mojo-ai.tools]
+disabled = []

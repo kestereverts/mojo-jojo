@@ -144,6 +144,53 @@ describe("DebugHarness.chat", () => {
       expect(JSON.stringify(captured.systemPrompt)).toContain("Testville");
     });
   });
+
+  describe("default tool registry (tools omitted entirely)", () => {
+    test("omitting `tools` uses the real registry — its guidance is folded into instructions", async () => {
+      const captured: { systemPrompt?: unknown } = {};
+      const model = new MockLanguageModelV4({
+        doGenerate: async (options: { prompt: unknown }) => {
+          captured.systemPrompt = options.prompt;
+          return {
+            content: [{ type: "text", text: "hi" }],
+            finishReason: { unified: "stop", raw: undefined },
+            usage: {
+              inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+              outputTokens: { total: 1, text: 1, reasoning: undefined },
+            },
+            warnings: [],
+          };
+        },
+      });
+      // No `tools` field at all — must default to the real registry.
+      const h = new DebugHarness({ model });
+      await h.chat("hi");
+      // A real tool's guidance body text, proving the registry's guidance (not
+      // just an empty default) made it into the assembled instructions.
+      expect(JSON.stringify(captured.systemPrompt)).toContain("NEVER guess letter counts");
+    });
+
+    test("an explicit `tools: {}` opts out of default guidance/durable names entirely", async () => {
+      const captured: { systemPrompt?: unknown } = {};
+      const model = new MockLanguageModelV4({
+        doGenerate: async (options: { prompt: unknown }) => {
+          captured.systemPrompt = options.prompt;
+          return {
+            content: [{ type: "text", text: "hi" }],
+            finishReason: { unified: "stop", raw: undefined },
+            usage: {
+              inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined },
+              outputTokens: { total: 1, text: 1, reasoning: undefined },
+            },
+            warnings: [],
+          };
+        },
+      });
+      const h = new DebugHarness({ model, tools: {} });
+      await h.chat("hi");
+      expect(JSON.stringify(captured.systemPrompt)).not.toContain("NEVER guess letter counts");
+    });
+  });
 });
 
 describe("parseContextEvents", () => {

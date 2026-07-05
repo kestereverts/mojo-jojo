@@ -1,5 +1,5 @@
 import type { ModelMessage } from "ai";
-import type { ChatMessageEvent, ContextEvent, TurnContext } from "./events.ts";
+import type { ChatMessageEvent, ContextEvent, ToolTranscriptEvent, TurnContext } from "./events.ts";
 
 /**
  * Project the durable log + the ephemeral turn context into provider-agnostic
@@ -31,9 +31,17 @@ export function renderPrompt(events: readonly ContextEvent[], turn: TurnContext)
         messages.push({ role: "assistant", content: event.text });
         break;
       case "tool-transcript":
+        // Compact text in an assistant block, not synthetic tool-call/
+        // tool-result parts — replaying provider-specific call IDs across a
+        // DIFFERENT provider than the one that made the call is a
+        // compatibility risk (a call ID from Anthropic replayed against
+        // OpenAI, say). Revisit if fidelity here ever matters more than
+        // portability.
+        flushChat();
+        messages.push({ role: "assistant", content: toolTranscriptLine(event) });
+        break;
       case "subagent-briefing":
-        // TODO: render as tool-call / tool-result parts once tools produce
-        // durable transcripts; until then they are omitted from the prompt.
+        // TODO: render once subagents exist (M6).
         break;
     }
   }
@@ -53,4 +61,8 @@ export function renderPrompt(events: readonly ContextEvent[], turn: TurnContext)
 function chatLine(event: ChatMessageEvent): string {
   const { kind: _kind, ...line } = event;
   return JSON.stringify(line);
+}
+
+function toolTranscriptLine(event: ToolTranscriptEvent): string {
+  return `[tool ${event.tool}] input=${JSON.stringify(event.input)} output=${JSON.stringify(event.output)}`;
 }

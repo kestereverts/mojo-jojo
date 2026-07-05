@@ -8,22 +8,27 @@ import {
   MESSAGE_FORMAT_SECTION,
   SPECIAL_RESPONSES_SECTION,
 } from "./rules.ts";
-import { assembleInstructions } from "./sections.ts";
+import { assembleInstructions, type PromptSection } from "./sections.ts";
 
 /**
  * Assemble the full instructions from the fixed section order, given whatever
- * friends are currently known (omit for none — e.g. the debug CLI's default).
- * The single place both the live module and `mojo-ai-debug` build instructions
- * from, so they can never silently diverge — the same drift class M1/M2's
- * reviews caught in the config-parsing path.
+ * friends are currently known (omit for none — e.g. the debug CLI's default)
+ * and whatever tools are enabled (their colocated guidance, in registry
+ * order — see `tools/index.ts`'s `buildToolSet`). The single place both the
+ * live module and `mojo-ai-debug` build instructions from, so they can never
+ * silently diverge — the same drift class M1/M2's reviews caught in the
+ * config-parsing path.
  */
-export function buildDefaultInstructions(friends: readonly Friend[] = []): string {
+export function buildDefaultInstructions(
+  friends: readonly Friend[] = [],
+  toolGuidance: readonly PromptSection[] = [],
+): string {
   const knownUsers = buildKnownUsersSection(friends);
   return assembleInstructions([
     PERSONA_SECTION,
     BEHAVIOR_SECTION,
     MESSAGE_FORMAT_SECTION,
-    // Per-tool guidance sections slot in here once a tool registry exists (M4).
+    ...toolGuidance,
     ...(knownUsers ? [knownUsers] : []),
     ANTI_IMPERSONATION_SECTION,
     SPECIAL_RESPONSES_SECTION,

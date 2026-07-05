@@ -1,6 +1,8 @@
 import * as readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import type { ToolSet } from "ai";
 import type { Friend } from "../identity/speakers.ts";
+import type { PromptSection } from "../prompt/sections.ts";
 import { DebugHarness, parseContextEvents, type ChatOptions } from "./harness.ts";
 import { formatHuman, modelRoleLine, type ModelRoleStatus } from "./inspect.ts";
 
@@ -14,6 +16,10 @@ export interface ReplOptions extends ChatOptions {
   readonly modelRoles?: ModelRoleStatus[];
   /** Known people for identity resolution, loaded once at startup (see `identity/speakers.ts`). */
   readonly friends?: readonly Friend[];
+  /** The (config-`disabled`-filtered) tool registry — paired with `toolGuidance`/`durableToolNames`; see `DebugHarness`'s `tools` doc. */
+  readonly tools?: ToolSet;
+  readonly toolGuidance?: readonly PromptSection[];
+  readonly durableToolNames?: ReadonlySet<string>;
 }
 
 const HELP = `Commands:
@@ -101,6 +107,9 @@ function newHarness(options: ReplOptions): DebugHarness {
     replyLines: options.replyLines,
     historyLimit: options.historyLimit,
     friends: options.friends,
+    tools: options.tools,
+    toolGuidance: options.toolGuidance,
+    durableToolNames: options.durableToolNames,
   });
 }
 

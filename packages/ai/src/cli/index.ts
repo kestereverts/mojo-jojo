@@ -5,6 +5,7 @@ import { resolve as pathResolve } from "node:path";
 import { ConfigError } from "@mojo-jojo/bot";
 import { mojoAiModule } from "../mojo-ai.ts";
 import { loadFriendsFile, type Friend } from "../identity/speakers.ts";
+import { buildToolSet, defaultToolDefinitions } from "../tools/index.ts";
 import { DebugHarness, parseContextEvents } from "./harness.ts";
 import { describeModelRoles, formatHuman, formatJson } from "./inspect.ts";
 import { runRepl } from "./repl.ts";
@@ -14,6 +15,8 @@ const USAGE = `mojo-ai-debug — headless driver for the mojo-ai exchange core.
 Usage:
   mojo-ai-debug chat "<message>" [options]
   mojo-ai-debug repl [options]
+  mojo-ai-debug tools [--config <file>] [--json]   list the enabled tool
+                                                    registry + guidance
 
 Options:
   --as <name>            speaker identity: a nick, or (with --via) the
@@ -98,6 +101,10 @@ export async function main(argv: string[]): Promise<number> {
     // later milestone starts consuming a fallback role, this display should
     // be revisited so it can't misrepresent what will actually run.
     const modelRoles = describeModelRoles({ ...cliConfig.models, chat: model });
+    // Built explicitly (rather than relying on the harness's own all-tools
+    // default) so a config's `tools.disabled` list is actually honored here —
+    // the same list the live module reads via the same parseConfig.
+    const registry = buildToolSet(defaultToolDefinitions(), cliConfig.toolsDisabled);
 
     if (command === "chat") {
       const message = rest.join(" ").trim();
@@ -111,6 +118,9 @@ export async function main(argv: string[]): Promise<number> {
         replyLines: cliConfig.replyLines,
         historyLimit: cliConfig.historyLimit,
         friends,
+        tools: registry.tools,
+        toolGuidance: registry.guidance,
+        durableToolNames: registry.durableNames,
       });
       if (values.inject) {
         for (const event of await readInjectFile(values.inject)) harness.inject(event);
@@ -138,6 +148,9 @@ export async function main(argv: string[]): Promise<number> {
         replyLines: cliConfig.replyLines,
         historyLimit: cliConfig.historyLimit,
         friends,
+        tools: registry.tools,
+        toolGuidance: registry.guidance,
+        durableToolNames: registry.durableNames,
         as: values.as,
         account: values.account,
         via: values.via,
@@ -156,6 +169,11 @@ export async function main(argv: string[]): Promise<number> {
       return 2;
     }
 
+    if (command === "tools") {
+      stdout.write(`${values.json ? formatToolsJson(registry) : formatToolsHuman(registry)}\n`);
+      return 0;
+    }
+
     stderr.write(`unknown command: ${command}\n\n${USAGE}\n`);
     return 2;
   } catch (cause) {
@@ -165,6 +183,25 @@ export async function main(argv: string[]): Promise<number> {
     }
     throw cause;
   }
+}
+
+function formatToolsHuman(registry: ReturnType<typeof buildToolSet>): string {
+  if (registry.entries.length === 0) return "(no tools enabled)";
+  return registry.entries
+    .map((entry) => {
+      const durable = entry.durableTranscript ? " [durable]" : "";
+      return `${entry.name}${durable}\n${entry.guidance ? `  ${entry.guidance.body}` : "  (no guidance)"}`;
+    })
+    .join("\n\n");
+}
+
+function formatToolsJson(registry: ReturnType<typeof buildToolSet>): string {
+  const tools = registry.entries.map((entry) => ({
+    name: entry.name,
+    durableTranscript: entry.durableTranscript,
+    guidance: entry.guidance?.body ?? null,
+  }));
+  return JSON.stringify({ tools }, null, 2);
 }
 
 /** A user-input error (bad flag, unreadable/invalid config or inject file) → exit 2. */
