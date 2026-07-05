@@ -89,10 +89,21 @@ describe("ported static prompt sections", () => {
       "The Hague",
       "Almelo",
       "TheIJ",
+      // Found in adversarial review (round 1): real names missed by the
+      // initial pass because they appeared as prose mentions (family lore,
+      // special-response triggers), not as Known-Users-table tokens.
+      "Jannis", // mave/J/Jannis — Known Users, Eschweiler, Germany
+      "Milo", // Known Users, Almere, Netherlands
+      "Jorijn Schrijvershof", // full name; was "Cibby's father-in-law" in persona lore
     ];
     const allText = STATIC_SECTIONS.map((s) => s.body).join("\n");
     for (const name of excised) {
       expect(allText).not.toContain(name);
     }
+  });
+
+  test("Marko (unconfirmed real-person correlation, but the same risky attributed-quote pattern as the confirmed leaks) was genericized defensively", () => {
+    const allText = STATIC_SECTIONS.map((s) => s.body).join("\n");
+    expect(allText).not.toContain("Marko");
   });
 });

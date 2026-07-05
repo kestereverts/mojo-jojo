@@ -89,7 +89,14 @@ export function createRelayMiddleware(
     const text = match?.groups?.text;
     if (author === undefined || text === undefined) return msg;
 
-    return { ...msg, speaker: { ...msg.speaker, author, via: relay.nick }, text };
+    // Drop any IRC account carried by `msg.speaker` — it belongs to the RELAY
+    // BOT (which may itself be registered/authenticated to avoid being
+    // killed/kicked on networks that require it), not the person actually
+    // speaking through the bridge. Without this, a message would inherit the
+    // bridge's own account and wrongly resolve to trust:"account" instead of
+    // the weaker "relay" tier its evidence actually supports.
+    const { account: _relayBotAccount, ...facts } = msg.speaker;
+    return { ...msg, speaker: { ...facts, author, via: relay.nick }, text };
   };
 }
 

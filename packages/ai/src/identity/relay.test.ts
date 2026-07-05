@@ -127,4 +127,16 @@ describe("createRelayMiddleware", () => {
     const result = mw(msg("TELEGRAM", "alice: hi"));
     expect(result?.speaker.via).toBe("Telegram");
   });
+
+  test("strips a pre-existing account when unwrapping — it belongs to the relay bot, not the real author", () => {
+    // A relay bot can itself be registered/authenticated (e.g. to avoid being
+    // killed on networks that require it). That account must never leak onto
+    // the bridged author, or resolveSpeaker would wrongly grant trust:"account"
+    // for evidence that only supports the weaker "relay" tier.
+    const mw = createRelayMiddleware(relays, noMapper);
+    const withAccount = { ...msg("Telegram", "alice: hi"), speaker: { nick: "Telegram", account: "telegram-bot" } };
+    const result = mw(withAccount);
+    expect(result?.speaker.account).toBeUndefined();
+    expect(result?.speaker.author).toBe("alice");
+  });
 });
