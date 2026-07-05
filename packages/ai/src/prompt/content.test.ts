@@ -92,9 +92,9 @@ describe("ported static prompt sections", () => {
       // Found in adversarial review (round 1): real names missed by the
       // initial pass because they appeared as prose mentions (family lore,
       // special-response triggers), not as Known-Users-table tokens.
-      "Jannis", // mave/J/Jannis — Known Users, Eschweiler, Germany
-      "Milo", // Known Users, Almere, Netherlands
-      "Jorijn Schrijvershof", // full name; was "Cibby's father-in-law" in persona lore
+      "Jannis", // a real Known Users entry
+      "Milo", // a real Known Users entry
+      "Jorijn Schrijvershof", // a real full name (was "Cibby's father-in-law" in persona lore)
     ];
     const allText = STATIC_SECTIONS.map((s) => s.body).join("\n");
     for (const name of excised) {

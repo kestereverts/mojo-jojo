@@ -2,14 +2,10 @@ import type { PromptSection } from "./sections.ts";
 
 /**
  * Identity/lore, ported from mojo-ai3's `system.md` "Identity" section. Mostly
- * fictional character lore (Mojo/Cibby/Nojo/Emojo), with two real-person
- * references genericized during the port (found in adversarial review, not
- * caught by the initial PII pass — a full real name is more identifying than
- * anything in the Known Users table this milestone otherwise excises):
- * "Jorijn Schrijvershof" (Cibby's real developer, referenced as an in-law) and
- * "Jannis" (a real channel member named as Nojo's "operator" — also a Known
- * Users table entry). Both replaced with role descriptions that keep the lore
- * intact without naming anyone.
+ * fictional character lore (Mojo/Cibby/Nojo/Emojo). Two real-person names were
+ * found during adversarial review (missed by the initial PII pass) and
+ * replaced with role descriptions that keep the lore intact without naming
+ * anyone — see `content.test.ts`'s regression list for which.
  */
 export const PERSONA_SECTION: PromptSection = {
   id: "persona",
