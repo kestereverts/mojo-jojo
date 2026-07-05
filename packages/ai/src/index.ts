@@ -12,7 +12,14 @@ export type {
 } from "./context/events.ts";
 export { InMemoryContextLog, type ContextLog } from "./context/log.ts";
 export { renderPrompt } from "./context/render.ts";
-export { runExchange, type ExchangeOptions } from "./exchange.ts";
+export {
+  runExchange,
+  type ExchangeOptions,
+  type ExchangeResult,
+  type ExchangeStep,
+  type ExchangeToolCall,
+} from "./exchange.ts";
+export { toReplyLines } from "./reply.ts";
 export { resolveModel } from "./models.ts";
 export { defaultTools } from "./tools.ts";
 export { DEFAULT_INSTRUCTIONS } from "./persona.ts";

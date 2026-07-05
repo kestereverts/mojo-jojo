@@ -10,6 +10,7 @@ import {
 import type { PrivmsgEvent } from "@mojo-jojo/irc-client";
 import { InMemoryContextLog, type ContextLog } from "./context/log.ts";
 import { runExchange } from "./exchange.ts";
+import { toReplyLines } from "./reply.ts";
 import { defaultTools } from "./tools.ts";
 import { DEFAULT_INSTRUCTIONS } from "./persona.ts";
 
@@ -128,7 +129,7 @@ export function mojoAiModule(): Module<MojoAiConfig> {
                       },
                     ),
                   ).pipe(
-                    map((reply) => ({ event, reply })),
+                    map((result) => ({ event, reply: result.text })),
                     catchError((error) => {
                       ctx.log.warn(`exchange failed in ${convoKey(event)}`, error);
                       return EMPTY;
@@ -151,11 +152,7 @@ function deliver(
   event: PrivmsgEvent,
   reply: string,
 ): void {
-  const lines = reply
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    .slice(0, ctx.config.replyLines);
+  const lines = toReplyLines(reply, ctx.config.replyLines);
   if (lines.length === 0) return;
 
   const target = replyTarget(event);

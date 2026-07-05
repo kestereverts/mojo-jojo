@@ -11,11 +11,15 @@
     ".": "./src/index.ts",
     "./mojo-ai": "./src/mojo-ai.ts"
   },
+  "bin": {
+    "mojo-ai-debug": "./src/cli/index.ts"
+  },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "build": "bun build src/index.ts --outdir dist --target bun",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "debug": "bun --env-file=../../.env run src/cli/index.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.8",

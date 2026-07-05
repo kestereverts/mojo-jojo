@@ -1,0 +1,92 @@
+import * as readline from "node:readline/promises";
+import { stdin, stdout } from "node:process";
+import { DebugHarness, parseContextEvents, type ChatOptions } from "./harness.ts";
+import { formatHuman } from "./inspect.ts";
+
+export interface ReplOptions extends ChatOptions {
+  readonly model: string;
+  readonly maxSteps?: number;
+  readonly verbose?: boolean;
+}
+
+const HELP = `Commands:
+  <text>            send a message through the exchange
+  /inject <json>    append an event (JSON object or array) to the log
+  /dump             print the durable history as JSON
+  /tokens           print cumulative token usage this session
+  /reset            clear the conversation log
+  /help             show this help
+  /exit             quit`;
+
+/**
+ * Interactive REPL over a single {@link DebugHarness}. State (the ContextLog and
+ * cumulative token totals) persists across turns for the life of the process —
+ * no DB needed. Every message runs the same pipeline `chat` uses.
+ */
+export async function runRepl(options: ReplOptions): Promise<void> {
+  let harness = newHarness(options);
+  const totals = { input: 0, output: 0, total: 0 };
+  // Async iteration (not `question`) so the loop drains piped input in order and
+  // ends cleanly on EOF instead of throwing "readline was closed".
+  const rl = readline.createInterface({ input: stdin, output: stdout, prompt: "» " });
+
+  stdout.write(`mojo-ai debug repl — model ${options.model}. /help for commands.\n`);
+  rl.prompt();
+
+  for await (const raw of rl) {
+    const line = raw.trim();
+    if (line.length === 0) {
+      rl.prompt();
+      continue;
+    }
+
+    if (line.startsWith("/")) {
+      const cmd = line.slice(1).split(/\s+/, 1)[0] ?? "";
+      const arg = line.slice(1 + cmd.length).trim();
+      if (cmd === "exit" || cmd === "quit") break;
+      else if (cmd === "help") stdout.write(`${HELP}\n`);
+      else if (cmd === "reset") {
+        harness = newHarness(options);
+        stdout.write("(log cleared)\n");
+      } else if (cmd === "dump") {
+        stdout.write(`${JSON.stringify(harness.log.events(), null, 2)}\n`);
+      } else if (cmd === "tokens") {
+        stdout.write(`input=${totals.input} output=${totals.output} total=${totals.total}\n`);
+      } else if (cmd === "inject") {
+        injectFrom(harness, arg);
+      } else {
+        stdout.write(`unknown command: /${cmd} (/help)\n`);
+      }
+      rl.prompt();
+      continue;
+    }
+
+    const outcome = await harness.chat(line, options);
+    if (outcome.result) {
+      totals.input += outcome.result.usage.inputTokens ?? 0;
+      totals.output += outcome.result.usage.outputTokens ?? 0;
+      totals.total += outcome.result.usage.totalTokens ?? 0;
+    }
+    stdout.write(`${formatHuman(outcome, { verbose: options.verbose })}\n\n`);
+    rl.prompt();
+  }
+
+  rl.close();
+}
+
+function newHarness(options: ReplOptions): DebugHarness {
+  return new DebugHarness({ model: options.model, maxSteps: options.maxSteps });
+}
+
+function injectFrom(harness: DebugHarness, json: string): void {
+  if (!json) {
+    stdout.write("usage: /inject <json object or array>\n");
+    return;
+  }
+  try {
+    for (const event of parseContextEvents(JSON.parse(json))) harness.inject(event);
+    stdout.write("(injected)\n");
+  } catch (cause) {
+    stdout.write(`inject failed: ${cause instanceof Error ? cause.message : String(cause)}\n`);
+  }
+}

@@ -1,12 +1,23 @@
-import { ToolLoopAgent, stepCountIs, type ToolSet } from "ai";
+import {
+  ToolLoopAgent,
+  stepCountIs,
+  type LanguageModel,
+  type LanguageModelUsage,
+  type ModelMessage,
+  type ToolSet,
+} from "ai";
 import type { TurnContext } from "./context/events.ts";
 import type { ContextLog } from "./context/log.ts";
 import { renderPrompt } from "./context/render.ts";
 import { resolveModel } from "./models.ts";
 
 export interface ExchangeOptions {
-  /** `"provider/model-id"` spec (e.g. "google/gemini-3.5-flash"); see {@link resolveModel}. */
-  readonly model: string;
+  /**
+   * Either a `"provider/model-id"` spec (resolved via {@link resolveModel}) or a
+   * pre-built `LanguageModel` instance. The instance form is the injection seam
+   * for tests (a mock model) — it never touches the provider registry.
+   */
+  readonly model: string | LanguageModel;
   /** System prompt / persona. */
   readonly instructions: string;
   readonly tools?: ToolSet;
@@ -16,6 +27,44 @@ export interface ExchangeOptions {
   readonly timeoutMs?: number;
   /** Cancels the exchange (e.g. module disposal, supersession). */
   readonly signal?: AbortSignal;
+}
+
+/** One tool invocation within a step, flattened for inspection/recording. */
+export interface ExchangeToolCall {
+  readonly toolName: string;
+  readonly input: unknown;
+  readonly output?: unknown;
+}
+
+/** A single model-call step of the tool loop. */
+export interface ExchangeStep {
+  readonly index: number;
+  readonly text: string;
+  readonly finishReason: string;
+  readonly toolCalls: readonly ExchangeToolCall[];
+  readonly usage: LanguageModelUsage;
+  /** Total wall time for the step (model + client-side tool execution), ms. */
+  readonly stepTimeMs: number;
+  /** Time spent awaiting the model response, ms. */
+  readonly responseTimeMs: number;
+}
+
+/**
+ * The full outcome of an exchange. `text` is what the live module delivers; the
+ * rest is what the debug CLI inspects. Both consumers run through this one
+ * function, so inspection is never a divergent build path — `prompt` is exactly
+ * the projection that was sent to the model.
+ */
+export interface ExchangeResult {
+  readonly text: string;
+  /** The rendered projection (`renderPrompt` output) that was sent this turn. */
+  readonly prompt: ModelMessage[];
+  readonly steps: readonly ExchangeStep[];
+  /** Aggregate token usage across all steps. */
+  readonly usage: LanguageModelUsage;
+  readonly finishReason: string;
+  /** Wall-clock duration of the whole exchange, ms. */
+  readonly wallMs: number;
 }
 
 /**
@@ -31,19 +80,46 @@ export async function runExchange(
   log: ContextLog,
   turn: TurnContext,
   options: ExchangeOptions,
-): Promise<string> {
+): Promise<ExchangeResult> {
   const agent = new ToolLoopAgent({
-    model: resolveModel(options.model),
+    model: typeof options.model === "string" ? resolveModel(options.model) : options.model,
     instructions: options.instructions,
     tools: options.tools ?? {},
     stopWhen: stepCountIs(options.maxSteps ?? 8),
   });
 
+  const prompt = renderPrompt(log.events(), turn);
+  const startedAt = performance.now();
   const result = await agent.generate({
-    messages: renderPrompt(log.events(), turn),
+    messages: prompt,
     abortSignal: options.signal,
     timeout: options.timeoutMs ?? 60_000,
   });
+  const wallMs = performance.now() - startedAt;
 
-  return result.text.trim();
+  const steps: ExchangeStep[] = result.steps.map((step, index) => {
+    const outputByCallId = new Map(step.toolResults.map((r) => [r.toolCallId, r.output]));
+    return {
+      index,
+      text: step.text,
+      finishReason: step.finishReason,
+      toolCalls: step.toolCalls.map((call) => ({
+        toolName: call.toolName,
+        input: call.input,
+        output: outputByCallId.get(call.toolCallId),
+      })),
+      usage: step.usage,
+      stepTimeMs: step.performance.stepTimeMs,
+      responseTimeMs: step.performance.responseTimeMs,
+    };
+  });
+
+  return {
+    text: result.text.trim(),
+    prompt,
+    steps,
+    usage: result.usage,
+    finishReason: result.finishReason,
+    wallMs,
+  };
 }
