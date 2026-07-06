@@ -102,6 +102,23 @@ describe("checkGrounding", () => {
     expect(result.ungroundedUrls).toEqual([]);
   });
 
+  test("trailing punctuation right after the URL in the SUMMARY prose is stripped the same way as in a reply — symmetric extraction (review coverage gap)", () => {
+    const priorEvents: ContextEvent[] = [
+      {
+        kind: "compaction",
+        at: "2026-01-01T00:00:00.000Z",
+        coversUntil: "2025-12-31T00:00:00.000Z",
+        // The URL is immediately followed by a period, mid-sentence — no
+        // trailing space, unlike the earlier test's summary.
+        summary: "The bot pasted the code at https://mojo.v00l.com/:endsInPeriod. Alice thanked it.",
+        eventCount: 40,
+      },
+    ];
+    const result = checkGrounding("It was https://mojo.v00l.com/:endsInPeriod", [], priorEvents);
+    expect(result.grounded).toBe(true);
+    expect(result.ungroundedUrls).toEqual([]);
+  });
+
   test("a URL NOT mentioned in the compaction summary is still ungrounded — compaction doesn't grant a blanket pass", () => {
     const priorEvents: ContextEvent[] = [
       {

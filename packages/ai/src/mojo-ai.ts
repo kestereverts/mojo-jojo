@@ -275,7 +275,15 @@ export function mojoAiModule(): Module<MojoAiConfig> {
                   addressed: true,
                 });
               } catch (error) {
-                ctx.log.warn(`failed to append chat-message for ${key}`, error);
+                // The logger call itself is wrapped too — defense in depth,
+                // per review: `ctx.log` is console-backed and won't throw in
+                // practice, but nothing here should be able to re-escape and
+                // reintroduce the exact failure this try/catch exists to stop.
+                try {
+                  ctx.log.warn(`failed to append chat-message for ${key}`, error);
+                } catch {
+                  // Deliberately swallowed — see above.
+                }
               }
             }),
             groupBy(({ key }) => key),
