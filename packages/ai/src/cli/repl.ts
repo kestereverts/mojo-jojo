@@ -2,12 +2,15 @@ import * as readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import type { ToolSet } from "ai";
 import type { Friend } from "../identity/speakers.ts";
+import type { ModelRoles } from "../models.ts";
 import type { PromptSection } from "../prompt/sections.ts";
 import { DebugHarness, parseContextEvents, type ChatOptions } from "./harness.ts";
 import { formatHuman, modelRoleLine, type ModelRoleStatus } from "./inspect.ts";
 
 export interface ReplOptions extends ChatOptions {
   readonly model: string;
+  /** Full model-role mapping — see `HarnessConfig.models`'s doc (needed only when `tools` is omitted; harmless to pass alongside an explicit `tools` override too). */
+  readonly models?: ModelRoles;
   readonly maxSteps?: number;
   readonly replyLines?: number;
   readonly historyLimit?: number;
@@ -104,6 +107,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 function newHarness(options: ReplOptions): DebugHarness {
   return new DebugHarness({
     model: options.model,
+    models: options.models,
     maxSteps: options.maxSteps,
     replyLines: options.replyLines,
     historyLimit: options.historyLimit,

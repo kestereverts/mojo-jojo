@@ -31,14 +31,20 @@ const ResearchInputSchema = z.object({
 });
 export type ResearchInput = z.infer<typeof ResearchInputSchema>;
 
-function researchInstructions(input: ResearchInput): string {
+// Deliberately does NOT interpolate `input.topic`/`input.objective` into the
+// system instructions — those are untrusted (ultimately user-controlled, via
+// whatever the main model's tool call happened to pass through) and
+// `runSubagent` already delivers them as the `prompt` (a JSON user-role
+// message, not system content) once resolved. Embedding them into the
+// system instructions too would let a crafted topic/objective inject
+// look-alike "Rules:" text ahead of the real rules below — a prompt-
+// injection surface with no benefit, since the model already receives the
+// same data through the prompt.
+function researchInstructions(): string {
   const nowUtc = new Date().toISOString();
-  return `You are a specialist web research subagent working for another assistant. Investigate the given topic using your tools and return a structured briefing.
+  return `You are a specialist web research subagent working for another assistant. Your user-role prompt contains the topic (and optionally an objective) as JSON — investigate that topic using your tools and return a structured briefing.
 
 The current UTC date and time is ${nowUtc}. Use this as authoritative when deciding what is current, recent, today, this week, or outdated.
-
-Topic: ${input.topic}
-${input.objective ? `Objective: ${input.objective}` : ""}
 
 Rules:
 - Use web_search when you need candidate sources.
@@ -50,6 +56,25 @@ Rules:
 - Prefer 1-2 strong sources over many weak ones.
 - If evidence is weak, a budget limit is hit, or sources conflict, set incomplete=true and lower confidence accordingly.
 - findings: max ${MAX_FINDINGS}. sources: max ${MAX_SOURCES} — only sources you actually read, not every search result seen.`;
+}
+
+/**
+ * The output schema bounds finding/source COUNTS but can't enforce that the
+ * model actually grounded its answer in a real source rather than search
+ * snippets or its own training data — that's exactly the failure mode
+ * research_topic exists to avoid. mojo-ai3 enforced this with a deterministic
+ * "must have called web_reader successfully" check; ported here as a
+ * `postProcess` hook rather than a schema constraint, since "did a specific
+ * tool call succeed" isn't expressible in the output shape alone. This is
+ * intentionally narrower than M7's planned general grounding guard (which
+ * checks a REPLY's cited URLs against tool transcripts) — that mechanism
+ * doesn't see inside a subagent's own tool-call history, so it can't catch a
+ * subagent fabricating sources it never actually read.
+ */
+function enforceGrounding(output: ResearchBriefing, toolCalls: readonly { toolName: string; error?: unknown }[]): ResearchBriefing {
+  const readASource = toolCalls.some((call) => call.toolName === "web_reader" && call.error === undefined);
+  if (readASource) return output;
+  return { ...output, incomplete: true, confidence: output.confidence === "high" ? "medium" : output.confidence };
 }
 
 export function researchSubagent() {
@@ -64,6 +89,7 @@ export function researchSubagent() {
     inputSchema: ResearchInputSchema,
     outputSchema: ResearchBriefingSchema,
     budget: { maxSteps: 8, timeoutMs: 60_000 },
+    postProcess: enforceGrounding,
     guidance: {
       id: "tool-research-topic",
       title: "research_topic",

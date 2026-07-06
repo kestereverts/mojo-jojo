@@ -263,12 +263,12 @@ describe("recordSubagentBriefings", () => {
     expect(log.events().some((e) => e.kind === "subagent-briefing")).toBe(false);
   });
 
-  test("does not truncate the briefing — bounded by the output schema, not this function", async () => {
+  test("truncates a long string field (a schema bounds finding/source COUNTS, not string sizes) — a briefing replays into every future prompt just like a tool transcript", async () => {
     const longSummary = "z".repeat(2000);
     const research = tool({
       description: "research",
       inputSchema: z.object({ topic: z.string() }),
-      execute: async () => ({ summary: longSummary }),
+      execute: async () => ({ summary: longSummary, url: "https://example.com/short-and-fine" }),
     });
     const model = new MockLanguageModelV4({ doGenerate: [toolCallStep("research_topic", { topic: "bun" }), textStep("done")] });
     const log = logWith("go");
@@ -277,6 +277,9 @@ describe("recordSubagentBriefings", () => {
     recordSubagentBriefings(log, result, new Set(["research_topic"]), NOW);
 
     const briefing = log.events().find((e) => e.kind === "subagent-briefing") as any;
-    expect(briefing.briefing.summary).toBe(longSummary);
+    expect(briefing.briefing.summary.length).toBeLessThan(longSummary.length);
+    expect(briefing.briefing.summary).toContain("truncated");
+    // Short/structural fields survive intact.
+    expect(briefing.briefing.url).toBe("https://example.com/short-and-fine");
   });
 });

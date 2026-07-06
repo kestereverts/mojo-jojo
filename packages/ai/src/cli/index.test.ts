@@ -2,7 +2,8 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unlink } from "node:fs/promises";
-import { main } from "./index.ts";
+import { cascadeModelOverride, main } from "./index.ts";
+import type { ModelRoles } from "../models.ts";
 
 /** Run `main` with stdout/stderr captured (kept quiet) so we can assert on both. */
 async function run(argv: string[]): Promise<{ code: number; out: string; err: string }> {
@@ -30,6 +31,40 @@ async function tmpConfig(body: string): Promise<string> {
 }
 afterAll(async () => {
   await Promise.all(tmpFiles.map((p) => unlink(p).catch(() => {})));
+});
+
+const MODELS: ModelRoles = {
+  chat: "openai/gpt-5.4-mini",
+  classifier: "openai/gpt-5.4-mini",
+  summarizer: "openai/gpt-5.4-mini",
+  research: "openai/gpt-5.4-mini",
+  embedding: "openai/text-embedding-3-small",
+};
+
+describe("cascadeModelOverride — --model reaching research_topic (review finding)", () => {
+  test("with no override, returns the models unchanged", () => {
+    expect(cascadeModelOverride(MODELS, undefined)).toEqual(MODELS);
+  });
+
+  test("cascades to every role that was defaulted to chat, including research — the actual bug found in review", () => {
+    const result = cascadeModelOverride(MODELS, "google/gemini-3.1-flash");
+    expect(result.chat).toBe("google/gemini-3.1-flash");
+    expect(result.research).toBe("google/gemini-3.1-flash");
+    expect(result.classifier).toBe("google/gemini-3.1-flash");
+    expect(result.summarizer).toBe("google/gemini-3.1-flash");
+  });
+
+  test("does NOT override a role that was explicitly configured differently from chat", () => {
+    const models: ModelRoles = { ...MODELS, research: "google/gemini-3.1-pro" };
+    const result = cascadeModelOverride(models, "google/gemini-3.1-flash");
+    expect(result.chat).toBe("google/gemini-3.1-flash");
+    expect(result.research).toBe("google/gemini-3.1-pro"); // untouched — it wasn't defaulted to chat
+  });
+
+  test("never touches embedding — it doesn't default to chat and --model never overrides it", () => {
+    const result = cascadeModelOverride(MODELS, "google/gemini-3.1-flash");
+    expect(result.embedding).toBe("openai/text-embedding-3-small");
+  });
 });
 
 describe("main — usage & validation exit codes (no network)", () => {

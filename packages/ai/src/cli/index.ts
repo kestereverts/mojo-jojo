@@ -8,6 +8,7 @@ import { loadFriendsFile, type Friend } from "../identity/speakers.ts";
 import { buildToolSet, defaultToolDefinitions } from "../tools/index.ts";
 import { runSubagent } from "../subagents/define.ts";
 import { researchSubagent } from "../subagents/research.ts";
+import type { ModelRoles } from "../models.ts";
 import { DebugHarness, parseContextEvents } from "./harness.ts";
 import { describeModelRoles, formatHuman, formatJson } from "./inspect.ts";
 import { runRepl } from "./repl.ts";
@@ -96,28 +97,24 @@ export async function main(argv: string[]): Promise<number> {
   try {
     const cliConfig = await loadCliConfig(values.config);
     const friends = await loadCliFriends(values.friends ?? cliConfig.friendsFile);
-    const model = values.model ?? cliConfig.models.chat;
     const maxSteps =
       values["max-steps"] !== undefined
         ? parsePositiveInt(values["max-steps"], "--max-steps")
         : cliConfig.maxSteps;
-    // Resolved once per invocation: which model each configured role maps to,
-    // and whether it constructs without throwing (no network call) — M2's
-    // CLI-verifiable surface. --model overrides only chat's displayed spec
-    // here; classifier/summarizer/research that fell back to chat at parse
-    // time still show that original value, NOT the override — a state no
-    // real config can produce today (those roles always track the parsed
-    // chat). Harmless since only chat is consumed by any exchange, but if a
-    // later milestone starts consuming a fallback role, this display should
-    // be revisited so it can't misrepresent what will actually run.
-    const modelRoles = describeModelRoles({ ...cliConfig.models, chat: model });
+    // --model cascades to every role that CURRENTLY resolves to `chat` —
+    // mirroring parseModelRoles's own "unset roles default to chat" fallback
+    // semantics (the legacy top-level `model` key does the same cascade) —
+    // rather than overriding chat's display only. Through M5 this only
+    // affected a cosmetic mismatch (no other role was ever consumed, so a
+    // stale display value was harmless); M6 actually CONSUMES `research`
+    // (research_topic), so a CLI --model override that didn't reach it would
+    // silently diverge from what --model appears to promise.
+    const models = cascadeModelOverride(cliConfig.models, values.model);
+    const modelRoles = describeModelRoles(models);
     // Built explicitly (rather than relying on the harness's own all-tools
     // default) so a config's `tools.disabled` list is actually honored here —
     // the same list the live module reads via the same parseConfig.
-    // cliConfig.models (NOT the --model-overridden `model` above) — --model
-    // is documented as overriding only the "chat" role for this invocation,
-    // not research_topic's "research" role.
-    const registry = buildToolSet(defaultToolDefinitions({ models: cliConfig.models }), cliConfig.toolsDisabled);
+    const registry = buildToolSet(defaultToolDefinitions({ models }), cliConfig.toolsDisabled);
 
     if (command === "chat") {
       const message = rest.join(" ").trim();
@@ -126,7 +123,8 @@ export async function main(argv: string[]): Promise<number> {
         return 2;
       }
       const harness = new DebugHarness({
-        model,
+        model: models.chat,
+        models,
         maxSteps,
         replyLines: cliConfig.replyLines,
         historyLimit: cliConfig.historyLimit,
@@ -157,7 +155,8 @@ export async function main(argv: string[]): Promise<number> {
 
     if (command === "repl") {
       await runRepl({
-        model,
+        model: models.chat,
+        models,
         maxSteps,
         replyLines: cliConfig.replyLines,
         historyLimit: cliConfig.historyLimit,
@@ -221,6 +220,26 @@ export async function main(argv: string[]): Promise<number> {
     }
     throw cause;
   }
+}
+
+/**
+ * Applies `--model` the same way the live module's legacy top-level `model`
+ * config key does: every role that currently resolves to `chat` (i.e. was
+ * never given its own explicit spec) cascades to the override too, not just
+ * `chat` itself. Without this, `--model` looked like a universal override
+ * but silently left `research_topic` (and any other role a later milestone
+ * starts consuming) on the un-overridden default.
+ */
+export function cascadeModelOverride(models: ModelRoles, override: string | undefined): ModelRoles {
+  if (!override) return models;
+  const cascades = (role: string): string => (role === models.chat ? override : role);
+  return {
+    chat: override,
+    classifier: cascades(models.classifier),
+    summarizer: cascades(models.summarizer),
+    research: cascades(models.research),
+    embedding: models.embedding, // never defaults to chat, never overridden by --model
+  };
 }
 
 function formatToolsHuman(registry: ReturnType<typeof buildToolSet>): string {

@@ -197,9 +197,14 @@ export function recordDurableTranscripts(
  * right after `runExchange` resolves — the same single-call-site discipline
  * as {@link recordDurableTranscripts}. A failed subagent call is never
  * recorded, for the same reason: a briefing that doesn't exist shouldn't be
- * remembered as if it did. Not truncated like tool transcripts — a
- * briefing's schema (bounded findings/sources counts, a few-sentence
- * summary) is already compact by construction.
+ * remembered as if it did.
+ *
+ * Truncated the same way durable tool transcripts are: an output schema can
+ * bound array *counts* (e.g. `research_topic`'s max 5 findings), but every
+ * string field within — a `summary`, a `claim`, a `sourceUrls` entry — is
+ * still unbounded, so "the schema is compact" is not actually a size
+ * guarantee. A briefing replays into every future prompt for the
+ * conversation exactly like a tool transcript does.
  */
 export function recordSubagentBriefings(
   log: ContextLog,
@@ -210,7 +215,12 @@ export function recordSubagentBriefings(
   for (const step of result.steps) {
     for (const call of step.toolCalls) {
       if (call.error !== undefined || !subagentNames.has(call.toolName)) continue;
-      log.append({ kind: "subagent-briefing", at: now().toISOString(), agent: call.toolName, briefing: call.output });
+      log.append({
+        kind: "subagent-briefing",
+        at: now().toISOString(),
+        agent: call.toolName,
+        briefing: truncateForTranscript(call.output),
+      });
     }
   }
 }

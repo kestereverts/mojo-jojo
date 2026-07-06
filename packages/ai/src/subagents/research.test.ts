@@ -108,3 +108,62 @@ describe("research subagent — full mocked run (real web_search/web_reader tool
     expect(callCount).toBe(3);
   });
 });
+
+describe("research subagent — grounding enforcement (postProcess)", () => {
+  test("a briefing produced WITHOUT any successful web_reader call is downgraded: incomplete forced true, high confidence capped to medium", async () => {
+    // The model claims a confident, complete briefing from search snippets
+    // alone — never actually calling web_reader. The output schema can't
+    // catch this (it only bounds counts); enforceGrounding must.
+    process.env.BRAVE_SEARCH_API_KEY = "test-key";
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ web: { results: [{ title: "Bun", url: "https://bun.sh/", description: "A fast runtime." }] } }), { status: 200 })) as unknown as typeof fetch;
+
+    let callCount = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            content: [{ type: "tool-call", toolCallId: "c1", toolName: "web_search", input: JSON.stringify({ query: "bun" }) }],
+            finishReason: { unified: "tool-calls", raw: undefined },
+            usage,
+            warnings: [],
+          };
+        }
+        // Never calls web_reader — jumps straight to a confident final answer.
+        return { content: [{ type: "text", text: JSON.stringify(VALID_BRIEFING) }], finishReason: { unified: "stop", raw: undefined }, usage, warnings: [] };
+      },
+    });
+
+    const output = await runSubagent(researchSubagent(), { topic: "bun" }, { models: MODELS, model });
+    expect(output.incomplete).toBe(true);
+    expect(output.confidence).toBe("medium"); // was "high" in VALID_BRIEFING
+    expect(output.summary).toBe(VALID_BRIEFING.summary); // content itself is untouched, only the trust signals
+  });
+
+  test("a briefing that already reports low/medium confidence stays as-is when ungrounded — never upgraded, only ever downgraded or left alone", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ web: { results: [] } }), { status: 200 })) as unknown as typeof fetch;
+    process.env.BRAVE_SEARCH_API_KEY = "test-key";
+
+    const lowConfidenceBriefing = { ...VALID_BRIEFING, confidence: "low" as const, incomplete: true };
+    let callCount = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        callCount++;
+        if (callCount === 1) {
+          return {
+            content: [{ type: "tool-call", toolCallId: "c1", toolName: "web_search", input: JSON.stringify({ query: "bun" }) }],
+            finishReason: { unified: "tool-calls", raw: undefined },
+            usage,
+            warnings: [],
+          };
+        }
+        return { content: [{ type: "text", text: JSON.stringify(lowConfidenceBriefing) }], finishReason: { unified: "stop", raw: undefined }, usage, warnings: [] };
+      },
+    });
+
+    const output = await runSubagent(researchSubagent(), { topic: "bun" }, { models: MODELS, model });
+    expect(output.confidence).toBe("low");
+    expect(output.incomplete).toBe(true);
+  });
+});

@@ -12,11 +12,25 @@ export interface SubagentBudget {
   readonly timeoutMs: number;
 }
 
+/** One tool call made during a subagent run, flattened enough for a `postProcess` hook to check "did X succeed" without depending on AI SDK's own step shape. */
+export interface SubagentToolCall {
+  readonly toolName: string;
+  /** Set when the call failed (an AI SDK v7 `tool-error` content part) — absent means it succeeded. */
+  readonly error?: unknown;
+}
+
 export interface SubagentDefinition<TInput, TOutput> {
   readonly name: string;
   readonly description: string;
-  /** Static instructions, or a function of the parsed input (e.g. to inject the topic/objective directly into the system prompt). */
-  readonly instructions: string | ((input: TInput) => string);
+  /**
+   * Static instructions, or a function returning them fresh per run (e.g. to
+   * inject the current time). Deliberately NOT a function of the parsed
+   * input: `topic`/`objective`-style fields are untrusted (user-controlled,
+   * ultimately) and are already delivered as the `prompt` (a user-role JSON
+   * message, not system content) by `runSubagent` — folding them into system
+   * instructions too would open a prompt-injection surface for no benefit.
+   */
+  readonly instructions: string | (() => string);
   readonly tools: ToolSet;
   /** Which {@link ModelRoles} entry resolves this subagent's model — independent of the main chat model. */
   readonly modelRole: keyof ModelRoles;
@@ -25,6 +39,14 @@ export interface SubagentDefinition<TInput, TOutput> {
   readonly budget: SubagentBudget;
   /** Colocated guidance for the parent agent's instructions when exposed via {@link subagentAsTool} — same convention as {@link ToolDefinition}. */
   readonly guidance?: PromptSection;
+  /**
+   * Optional post-processing over a successful attempt's schema-validated
+   * output and the tool calls it made — for invariants the output schema
+   * can't express on its own (e.g. "the model must have actually read a
+   * source, not just seen search snippets"). Runs only once, after the FINAL
+   * successful attempt (not the discarded schema-failure one).
+   */
+  readonly postProcess?: (output: TOutput, toolCalls: readonly SubagentToolCall[]) => TOutput;
 }
 
 /** Identity function with a name — a subagent definition is fully described by its literal shape; nothing to construct. */
@@ -46,18 +68,18 @@ export interface RunSubagentDeps {
   readonly signal?: AbortSignal;
 }
 
-async function withDeadline<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
+function toSubagentToolCalls(steps: readonly { content: readonly { type: string; toolCallId?: string; error?: unknown }[]; toolCalls: readonly { toolName: string; toolCallId: string }[] }[]): SubagentToolCall[] {
+  const calls: SubagentToolCall[] = [];
+  for (const step of steps) {
+    const errorByCallId = new Map<string, unknown>();
+    for (const part of step.content) {
+      if (part.type === "tool-error" && part.toolCallId !== undefined) errorByCallId.set(part.toolCallId, part.error);
+    }
+    for (const call of step.toolCalls) {
+      calls.push({ toolName: call.toolName, error: errorByCallId.get(call.toolCallId) });
+    }
   }
+  return calls;
 }
 
 /**
@@ -66,10 +88,19 @@ async function withDeadline<T>(promise: Promise<T>, timeoutMs: number, message: 
  * structured output via `Output.object` — never hand-parsed JSON. On a
  * schema-validation failure (`NoObjectGeneratedError` — the model's final
  * response didn't parse/validate), retries ONCE with the failure fed back
- * into the instructions; any other error, or a second failure, propagates to
- * the caller (for `subagentAsTool`, that becomes a normal tool-execution
- * error — the same fail path every other tool already uses, rather than a
- * synthetic "successful but empty" result masquerading as real output).
+ * into the instructions, using whatever of `budget.timeoutMs` remains (NOT a
+ * fresh full budget — the budget is documented as bounding the whole run,
+ * retry included, so the retry mustn't be able to double it). Any other
+ * error, or a second failure, propagates to the caller (for `subagentAsTool`,
+ * that becomes a normal tool-execution error — the same fail path every
+ * other tool already uses, rather than a synthetic "successful but empty"
+ * result masquerading as real output).
+ *
+ * The timeout is enforced via `agent.generate`'s own `timeout` option (the
+ * same mechanism `exchange.ts`'s `runExchange` already uses), not a manual
+ * `Promise.race` — verified empirically that only the SDK's own option
+ * actually aborts the underlying model call/tools; a race that merely
+ * rejects the wrapper promise leaves the real work running orphaned.
  */
 export async function runSubagent<TInput, TOutput>(
   def: SubagentDefinition<TInput, TOutput>,
@@ -78,9 +109,9 @@ export async function runSubagent<TInput, TOutput>(
 ): Promise<TOutput> {
   const model = deps.model ?? resolveModel(deps.models[def.modelRole]);
   const parsedInput = def.inputSchema.parse(input);
-  const baseInstructions = typeof def.instructions === "function" ? def.instructions(parsedInput) : def.instructions;
+  const baseInstructions = typeof def.instructions === "function" ? def.instructions() : def.instructions;
 
-  async function attempt(extra?: string): Promise<TOutput> {
+  async function attempt(timeoutMs: number, extra?: string) {
     const agent = new ToolLoopAgent({
       model,
       instructions: extra ? `${baseInstructions}\n\n${extra}` : baseInstructions,
@@ -88,21 +119,29 @@ export async function runSubagent<TInput, TOutput>(
       stopWhen: stepCountIs(def.budget.maxSteps),
       output: Output.object({ schema: def.outputSchema }),
     });
-    const result = await agent.generate({
+    return agent.generate({
       prompt: JSON.stringify(parsedInput),
       abortSignal: deps.signal,
+      timeout: timeoutMs,
     });
-    return result.output;
   }
 
+  const deadlineAt = Date.now() + def.budget.timeoutMs;
+  let result: Awaited<ReturnType<typeof attempt>>;
   try {
-    return await withDeadline(attempt(), def.budget.timeoutMs, `${def.name} subagent exceeded ${def.budget.timeoutMs}ms`);
+    result = await attempt(def.budget.timeoutMs);
   } catch (cause) {
     if (!NoObjectGeneratedError.isInstance(cause)) throw cause;
+    const remainingMs = deadlineAt - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error(`${def.name} subagent exceeded ${def.budget.timeoutMs}ms (no budget left for the schema-failure retry)`);
+    }
     const reason = cause.cause instanceof Error ? cause.cause.message : String(cause.cause ?? cause.message);
     const feedback = `Your previous response did not produce valid structured output matching the required schema (${reason}). Try again and make sure your final response matches the schema exactly.`;
-    return await withDeadline(attempt(feedback), def.budget.timeoutMs, `${def.name} subagent exceeded ${def.budget.timeoutMs}ms`);
+    result = await attempt(remainingMs, feedback);
   }
+
+  return def.postProcess ? def.postProcess(result.output, toSubagentToolCalls(result.steps)) : result.output;
 }
 
 /**
