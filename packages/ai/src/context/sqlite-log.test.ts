@@ -76,7 +76,7 @@ describe("SqliteContextLog — append/events round-trip", () => {
     const log = new SqliteContextLog(db, "#test", 3);
     log.append(chat("1"));
     log.append(reply("2"));
-    log.compact(1, SUMMARY);
+    log.compact([chat("1"), reply("2")], SUMMARY);
     log.append(chat("3"));
     log.append(chat("4"));
     log.append(chat("5"));
@@ -96,7 +96,7 @@ describe("SqliteContextLog — append/events round-trip", () => {
 });
 
 describe("SqliteContextLog — compact", () => {
-  test("replaces every event up to and including throughIndex with the compaction event", () => {
+  test("replaces the oldest replacedEvents.length rows with the compaction event", () => {
     const db = openContextDb(":memory:");
     const log = new SqliteContextLog(db, "#test");
     log.append(chat("1"));
@@ -104,7 +104,7 @@ describe("SqliteContextLog — compact", () => {
     log.append(chat("3"));
     log.append(reply("4"));
 
-    log.compact(1, SUMMARY);
+    log.compact([chat("1"), reply("2")], SUMMARY);
 
     const events = log.events();
     expect(events).toHaveLength(3);
@@ -118,12 +118,12 @@ describe("SqliteContextLog — compact", () => {
     const log = new SqliteContextLog(db, "#test");
     log.append(chat("1"));
     log.append(reply("2"));
-    log.compact(1, SUMMARY);
+    log.compact([chat("1"), reply("2")], SUMMARY);
     log.append(chat("3"));
     log.append(reply("4"));
 
     const merged: CompactionEvent = { ...SUMMARY, summary: "merged", eventCount: 4 };
-    log.compact(1, merged);
+    log.compact([SUMMARY, chat("3")], merged);
 
     const events = log.events();
     expect(events).toHaveLength(2);
@@ -140,25 +140,55 @@ describe("SqliteContextLog — compact", () => {
     b.append(chat("b1"));
     b.append(reply("b2"));
 
-    a.compact(1, SUMMARY);
+    a.compact([chat("a1"), reply("a2")], SUMMARY);
 
     expect(a.events()).toEqual([SUMMARY]);
     expect(b.events()).toEqual([chat("b1"), reply("b2")]);
   });
 
-  test("rejects an out-of-range throughIndex", () => {
+  test("rejects an empty or over-length replacedEvents", () => {
     const db = openContextDb(":memory:");
     const log = new SqliteContextLog(db, "#test");
     log.append(chat("1"));
-    expect(() => log.compact(-1, SUMMARY)).toThrow(RangeError);
-    expect(() => log.compact(1, SUMMARY)).toThrow(RangeError); // only index 0 exists
-    expect(() => log.compact(0, SUMMARY)).not.toThrow();
+    expect(() => log.compact([], SUMMARY)).toThrow(RangeError);
+    expect(() => log.compact([chat("1"), reply("2")], SUMMARY)).toThrow(RangeError); // only 1 row exists
+    expect(() => log.compact([chat("1")], SUMMARY)).not.toThrow();
   });
 
   test("rejects compacting an empty conversation", () => {
     const db = openContextDb(":memory:");
     const log = new SqliteContextLog(db, "#test");
-    expect(() => log.compact(0, SUMMARY)).toThrow(RangeError);
+    expect(() => log.compact([chat("1")], SUMMARY)).toThrow(RangeError);
+  });
+
+  test("rejects a STALE snapshot — the actual rows no longer match what was passed (review finding: closes the concurrent-compaction data-loss race Cody reproduced, not just an index bound)", () => {
+    const db = openContextDb(":memory:");
+    const log = new SqliteContextLog(db, "#test");
+    log.append(chat("1"));
+    log.append(reply("2"));
+    // Simulates a concurrent writer (another process, or a second in-flight
+    // compaction round) having already changed the conversation's rows
+    // between this caller's snapshot and its compact() call.
+    const staleSnapshot = [chat("1"), reply("A DIFFERENT REPLY THAN WHAT'S ACTUALLY STORED")];
+    expect(() => log.compact(staleSnapshot, SUMMARY)).toThrow(RangeError);
+    // Nothing was deleted — the real rows survive untouched.
+    expect(log.events()).toEqual([chat("1"), reply("2")]);
+  });
+
+  test("a stale snapshot is detected even when the LENGTH still matches (only the content changed)", () => {
+    const db = openContextDb(":memory:");
+    const log = new SqliteContextLog(db, "#test");
+    log.append(chat("1"));
+    log.append(reply("2"));
+    // A prior compaction round (or a concurrent writer) already replaced
+    // these two rows with a summary of the SAME length — a plain count
+    // check would have let this through; content verification catches it.
+    log.compact([chat("1"), reply("2")], SUMMARY);
+    log.append(chat("3"));
+
+    const staleSnapshot = [chat("1"), reply("2")]; // no longer exists — SUMMARY replaced it
+    expect(() => log.compact(staleSnapshot, { ...SUMMARY, summary: "stale merge attempt" })).toThrow(RangeError);
+    expect(log.events()).toEqual([SUMMARY, chat("3")]);
   });
 });
 

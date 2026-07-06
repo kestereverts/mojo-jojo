@@ -46,7 +46,7 @@ describe("InMemoryContextLog — append + limit", () => {
     const log = new InMemoryContextLog(3);
     log.append(chatEvent("1"));
     log.append(replyEvent("2"));
-    log.compact(1, SUMMARY); // events: [SUMMARY]
+    log.compact([chatEvent("1"), replyEvent("2")], SUMMARY); // events: [SUMMARY]
     log.append(chatEvent("3"));
     log.append(chatEvent("4"));
     log.append(chatEvent("5")); // over the limit of 3 (SUMMARY + 3 tail events = 4)
@@ -62,7 +62,7 @@ describe("InMemoryContextLog — append + limit", () => {
     const log = new InMemoryContextLog(2);
     log.append(chatEvent("1"));
     log.append(replyEvent("2"));
-    log.compact(1, SUMMARY); // events: [SUMMARY]
+    log.compact([chatEvent("1"), replyEvent("2")], SUMMARY); // events: [SUMMARY]
     log.append(chatEvent("3")); // [SUMMARY, "3"] — at the limit, no trim yet
     log.append(chatEvent("4")); // over the limit — protects SUMMARY, evicts "3"
     log.append(chatEvent("5")); // over the limit again — protects SUMMARY, evicts "4"
@@ -71,14 +71,14 @@ describe("InMemoryContextLog — append + limit", () => {
 });
 
 describe("InMemoryContextLog — compact", () => {
-  test("replaces every event up to and including throughIndex with the compaction event", () => {
+  test("replaces the oldest replacedEvents.length events with the compaction event", () => {
     const log = new InMemoryContextLog();
     log.append(chatEvent("1"));
     log.append(replyEvent("2"));
     log.append(chatEvent("3"));
     log.append(replyEvent("4"));
 
-    log.compact(1, SUMMARY); // replace events[0..1] ("1","2")
+    log.compact([chatEvent("1"), replyEvent("2")], SUMMARY);
 
     const events = log.events();
     expect(events).toHaveLength(3);
@@ -87,11 +87,11 @@ describe("InMemoryContextLog — compact", () => {
     expect((events[2] as BotReplyEvent).text).toBe("4");
   });
 
-  test("can compact the ENTIRE log (throughIndex = last index), leaving only the summary", () => {
+  test("can compact the ENTIRE log, leaving only the summary", () => {
     const log = new InMemoryContextLog();
     log.append(chatEvent("1"));
     log.append(replyEvent("2"));
-    log.compact(1, SUMMARY);
+    log.compact([chatEvent("1"), replyEvent("2")], SUMMARY);
     expect(log.events()).toEqual([SUMMARY]);
   });
 
@@ -99,12 +99,12 @@ describe("InMemoryContextLog — compact", () => {
     const log = new InMemoryContextLog();
     log.append(chatEvent("1"));
     log.append(replyEvent("2"));
-    log.compact(1, SUMMARY);
+    log.compact([chatEvent("1"), replyEvent("2")], SUMMARY);
     log.append(chatEvent("3"));
     log.append(replyEvent("4"));
 
     const merged: CompactionEvent = { ...SUMMARY, summary: "merged summary", eventCount: 4 };
-    log.compact(1, merged); // replace [SUMMARY, "3"] with the merged summary
+    log.compact([SUMMARY, chatEvent("3")], merged);
 
     const events = log.events();
     expect(events).toHaveLength(2);
@@ -112,16 +112,29 @@ describe("InMemoryContextLog — compact", () => {
     expect((events[1] as BotReplyEvent).text).toBe("4");
   });
 
-  test("rejects an out-of-range throughIndex", () => {
+  test("rejects an empty or over-length replacedEvents", () => {
     const log = new InMemoryContextLog();
     log.append(chatEvent("1"));
-    expect(() => log.compact(-1, SUMMARY)).toThrow(RangeError);
-    expect(() => log.compact(1, SUMMARY)).toThrow(RangeError); // only index 0 exists
-    expect(() => log.compact(0, SUMMARY)).not.toThrow();
+    expect(() => log.compact([], SUMMARY)).toThrow(RangeError);
+    expect(() => log.compact([chatEvent("1"), replyEvent("2")], SUMMARY)).toThrow(RangeError); // only 1 event exists
+    expect(() => log.compact([chatEvent("1")], SUMMARY)).not.toThrow();
   });
 
   test("rejects compacting an empty log", () => {
     const log = new InMemoryContextLog();
-    expect(() => log.compact(0, SUMMARY)).toThrow(RangeError);
+    expect(() => log.compact([chatEvent("1")], SUMMARY)).toThrow(RangeError);
+  });
+
+  test("rejects a STALE snapshot — the actual prefix no longer matches what was passed (review finding: closes a real data-loss race, not just an index bound)", () => {
+    const log = new InMemoryContextLog();
+    log.append(chatEvent("1"));
+    log.append(replyEvent("2"));
+    // Someone else already compacted/changed the log between when a caller
+    // snapshotted `events()` and when it calls `compact()` — simulate by
+    // passing a DIFFERENT (stale) view of what the prefix supposedly was.
+    const staleSnapshot = [chatEvent("1"), replyEvent("A DIFFERENT REPLY")];
+    expect(() => log.compact(staleSnapshot, SUMMARY)).toThrow(RangeError);
+    // The real log is untouched — nothing was silently deleted.
+    expect(log.events()).toEqual([chatEvent("1"), replyEvent("2")]);
   });
 });

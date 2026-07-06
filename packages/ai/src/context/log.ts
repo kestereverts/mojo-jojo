@@ -10,12 +10,22 @@ export interface ContextLog {
   /** Events oldest-first, within the retention window. */
   events(): readonly ContextEvent[];
   /**
-   * Physically replaces every event up to and including `events()[throughIndex]`
-   * with `event` — a durable, one-way operation (the replaced events are gone,
-   * not just hidden). `throughIndex` is an index into the array `events()`
-   * would currently return, not a storage-specific id.
+   * Physically replaces the oldest `replacedEvents.length` events with
+   * `event` — a durable, one-way operation (the replaced events are gone,
+   * not just hidden). `replacedEvents` must be EXACTLY the current oldest
+   * prefix (deep-equal, in order) — implementations verify this before
+   * mutating and throw if it has drifted since the caller snapshotted it
+   * (e.g. another writer for the same conversation already compacted or
+   * appended in between). This makes `compact()` safe to call from a stale
+   * snapshot: a drifted call fails loudly rather than silently deleting
+   * content a caller never actually summarized (M8 review finding — a
+   * plain event-count/index was NOT sufficient: two independently-computed
+   * compactions racing on the same conversation could each pass a "valid"
+   * count/index that no longer corresponded to what was actually
+   * summarized, silently losing whichever rows the second call's index
+   * happened to select instead of what its summary text actually covered).
    */
-  compact(throughIndex: number, event: CompactionEvent): void;
+  compact(replacedEvents: readonly ContextEvent[], event: CompactionEvent): void;
 }
 
 export class InMemoryContextLog implements ContextLog {
@@ -48,10 +58,14 @@ export class InMemoryContextLog implements ContextLog {
     return this.#events;
   }
 
-  compact(throughIndex: number, event: CompactionEvent): void {
-    if (!Number.isInteger(throughIndex) || throughIndex < 0 || throughIndex >= this.#events.length) {
-      throw new RangeError(`compact: throughIndex ${throughIndex} out of range for ${this.#events.length} events`);
+  compact(replacedEvents: readonly ContextEvent[], event: CompactionEvent): void {
+    if (replacedEvents.length === 0 || replacedEvents.length > this.#events.length) {
+      throw new RangeError(`compact: replacedEvents length ${replacedEvents.length} out of range for ${this.#events.length} events`);
     }
-    this.#events = [event, ...this.#events.slice(throughIndex + 1)];
+    const current = this.#events.slice(0, replacedEvents.length);
+    if (JSON.stringify(current) !== JSON.stringify(replacedEvents)) {
+      throw new RangeError("compact: the log has changed since these events were snapshotted — refusing to compact a stale prefix");
+    }
+    this.#events = [event, ...this.#events.slice(replacedEvents.length)];
   }
 }

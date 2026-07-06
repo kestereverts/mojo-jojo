@@ -86,31 +86,41 @@ export class SqliteContextLog implements ContextLog {
   }
 
   /**
-   * The read (which rows the compaction covers) and the write (delete +
-   * insert) now run INSIDE the same transaction — review finding: the first
-   * version computed `minId`/`maxId` via a SELECT *before* opening the
-   * transaction, a read-then-write gap a concurrent writer for the same
-   * conversation could land in. This closes that within-one-call race.
-   * Concurrent COMPACTION ROUNDS for the very same conversation from two
-   * different processes (e.g. the live bot and an operator's
-   * `compact --force` racing on the identical conversation at the same
-   * moment) remain a documented, accepted limitation — this module is built
-   * for single-writer-per-conversation (the live bot's own `exhaustMap`
-   * guarantees that internally); `busy_timeout` (see `openContextDb`) makes
-   * a concurrent WRITE wait rather than corrupt or throw, but two
-   * independently-computed summaries racing is an operational hazard to
-   * avoid, not something this method can detect on its own.
+   * The read (which rows the compaction covers), the drift check, and the
+   * write (delete + insert) all run INSIDE the same transaction. Review
+   * finding (Cody, reproduced directly): a plain event-count was NOT
+   * sufficient to make concurrent compaction rounds for the SAME
+   * conversation safe — two independently-computed compactions (e.g. the
+   * live bot and an operator's `compact --force`, or two summarizer rounds
+   * racing) could each pass a count that looked "valid" against whatever the
+   * log currently held, silently deleting rows that didn't actually
+   * correspond to what either one's summary text covered. Verifying the
+   * EXACT payloads (not just the count) inside the transaction closes this:
+   * if the oldest `replacedEvents.length` rows have changed at all since the
+   * caller snapshotted them, this throws instead of committing a summary
+   * that doesn't match what's actually being replaced — `maybeCompact`'s
+   * existing fail-open `catch` turns that into "skip this round," never
+   * silent data loss. `busy_timeout` (`openContextDb`) means a genuinely
+   * concurrent writer usually waits for this transaction rather than
+   * interleaving with it at all.
    */
-  compact(throughIndex: number, event: CompactionEvent): void {
-    if (!Number.isInteger(throughIndex) || throughIndex < 0) {
-      throw new RangeError(`compact: throughIndex ${throughIndex} out of range for ${this.#conversation}`);
+  compact(replacedEvents: readonly ContextEvent[], event: CompactionEvent): void {
+    if (replacedEvents.length === 0) {
+      throw new RangeError(`compact: replacedEvents must be non-empty for ${this.#conversation}`);
     }
     const tx = this.#db.transaction(() => {
       const rows = this.#db
-        .query("SELECT id FROM events WHERE conversation = ? ORDER BY id ASC LIMIT ?")
-        .all(this.#conversation, throughIndex + 1) as { id: number }[];
-      if (rows.length !== throughIndex + 1) {
-        throw new RangeError(`compact: throughIndex ${throughIndex} out of range for ${this.#conversation}`);
+        .query("SELECT id, payload FROM events WHERE conversation = ? ORDER BY id ASC LIMIT ?")
+        .all(this.#conversation, replacedEvents.length) as { id: number; payload: string }[];
+      if (rows.length !== replacedEvents.length) {
+        throw new RangeError(`compact: replacedEvents length ${replacedEvents.length} out of range for ${this.#conversation}`);
+      }
+      const expected = replacedEvents.map((e) => JSON.stringify(e));
+      const actual = rows.map((r) => r.payload);
+      if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+        throw new RangeError(
+          `compact: the log for ${this.#conversation} has changed since these events were snapshotted — refusing to compact a stale prefix`,
+        );
       }
       const minId = rows[0]!.id;
       const maxId = rows[rows.length - 1]!.id;

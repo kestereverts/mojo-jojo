@@ -267,7 +267,7 @@ describe("main — compact command (M8)", () => {
     const log = new SqliteContextLog(db, "debug", 10_000);
     log.append(chat("1"));
     log.append(chat("2"));
-    log.compact(1, { kind: "compaction", at: "t", coversUntil: "t", summary: "already summarized", eventCount: 2 });
+    log.compact([chat("1"), chat("2")], { kind: "compaction", at: "t", coversUntil: "t", summary: "already summarized", eventCount: 2 });
     db.close();
 
     const r = await run(["history", "--db", path, "--json"]);

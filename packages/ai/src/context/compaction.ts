@@ -113,9 +113,13 @@ export async function maybeCompact(
       summary,
       eventCount: toSummarize.length,
     };
-    log.compact(throughIndex, summaryEvent);
+    log.compact(toSummarize, summaryEvent);
     return true;
   } catch {
+    // Includes a stale-snapshot RangeError from `log.compact()` itself (a
+    // concurrent writer changed the prefix between this function's own
+    // `log.events()` snapshot and the LLM call resolving) — treated the
+    // same as any other compaction failure: skip this round, log untouched.
     return false;
   }
 }
