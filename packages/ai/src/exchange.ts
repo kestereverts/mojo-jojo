@@ -137,6 +137,30 @@ export async function runExchange(
   };
 }
 
+// A durable transcript is replayed into EVERY future prompt for a
+// conversation — a tool whose input/output happens to carry large text (e.g.
+// `paste`'s uploaded file content, `get_paste`'s retrieved file content)
+// would otherwise turn "remember this URL was pasted" into "re-paste the
+// entire file into every future prompt." Bounding string leaves (not the
+// whole payload) keeps short, useful fields (id/url/title/filename) intact
+// while capping what can actually bloat.
+const MAX_TRANSCRIPT_STRING_CHARS = 500;
+const MAX_TRANSCRIPT_DEPTH = 6;
+
+function truncateForTranscript(value: unknown, depth = 0): unknown {
+  if (depth >= MAX_TRANSCRIPT_DEPTH) return value;
+  if (typeof value === "string") {
+    return value.length > MAX_TRANSCRIPT_STRING_CHARS
+      ? `${value.slice(0, MAX_TRANSCRIPT_STRING_CHARS)}… [truncated, ${value.length} chars total]`
+      : value;
+  }
+  if (Array.isArray(value)) return value.map((v) => truncateForTranscript(v, depth + 1));
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, truncateForTranscript(v, depth + 1)]));
+  }
+  return value;
+}
+
 /**
  * Append a {@link ToolTranscriptEvent} for every successful call to a
  * `durableTranscript`-flagged tool. Called once, identically, by both the
@@ -155,7 +179,13 @@ export function recordDurableTranscripts(
   for (const step of result.steps) {
     for (const call of step.toolCalls) {
       if (call.error !== undefined || !durableNames.has(call.toolName)) continue;
-      log.append({ kind: "tool-transcript", at: now().toISOString(), tool: call.toolName, input: call.input, output: call.output });
+      log.append({
+        kind: "tool-transcript",
+        at: now().toISOString(),
+        tool: call.toolName,
+        input: truncateForTranscript(call.input),
+        output: truncateForTranscript(call.output),
+      });
     }
   }
 }

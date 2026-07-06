@@ -55,11 +55,11 @@ export function placesSearchTool(): ToolDefinition {
           ),
       }),
       execute: async ({ query }) => {
+        const apiKey = requireApiKey();
         if (!dailyQuota.tryConsume()) {
           throw new Error("daily rate limit exceeded for places_search — try again tomorrow");
         }
 
-        const apiKey = requireApiKey();
         const data = await fetchJson<GooglePlacesResponse>("https://places.googleapis.com/v1/places:searchText", {
           method: "POST",
           headers: {

@@ -68,6 +68,25 @@ describe("places_search", () => {
     expect(execute({ query: "x" }, {} as never)).rejects.toThrow(/GOOGLE_MAPS_API_KEY/);
   });
 
+  test("a missing API key is rejected BEFORE consuming a daily quota slot (review finding)", async () => {
+    const { placesSearchTool: freshTool } = await import(`./places-search.ts?isolate=${Date.now()}`);
+    const execute2 = freshTool().tool.execute!;
+    delete process.env.GOOGLE_MAPS_API_KEY;
+
+    for (let i = 0; i < 5; i++) {
+      await expect(execute2({ query: "x" }, {} as never)).rejects.toThrow(/GOOGLE_MAPS_API_KEY/);
+    }
+
+    // The quota must still be fully available — a misconfigured key
+    // shouldn't have burned any of the 20 daily slots.
+    process.env.GOOGLE_MAPS_API_KEY = "test-key";
+    globalThis.fetch = (async () => jsonResponse({ places: [] })) as unknown as typeof fetch;
+    for (let i = 0; i < 20; i++) {
+      await execute2({ query: `query ${i}` }, {} as never);
+    }
+    await expect(execute2({ query: "one too many" }, {} as never)).rejects.toThrow(/daily rate limit exceeded/);
+  });
+
   test("a non-2xx response throws", async () => {
     process.env.GOOGLE_MAPS_API_KEY = "test-key";
     globalThis.fetch = (async () => new Response("denied", { status: 403 })) as unknown as typeof fetch;

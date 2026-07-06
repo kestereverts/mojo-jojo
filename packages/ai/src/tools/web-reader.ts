@@ -2,17 +2,24 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import { Defuddle } from "defuddle/node";
 import { tool } from "ai";
 import { z } from "zod";
-import { fetchText } from "./http.ts";
+import { fetchLimited, readCapped } from "./http.ts";
+import { assertPublicHttpUrl } from "./ssrf-guard.ts";
 import { TtlCache } from "./cache.ts";
 import type { ToolDefinition } from "./define.ts";
 
 const FETCH_TIMEOUT_MS = 30_000;
 const MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
+const MAX_REDIRECTS = 5;
 const CONTENT_CHUNK_SIZE = 20_000;
 const FAST_PATH_HTML_THRESHOLD = 1_000_000; // above this, skip Defuddle entirely — see extractFastMarkdown
 const FAST_TEXT_LIMIT = 120_000;
 const DEFUDDLE_TIMEOUT_MS = 8_000;
 const CACHE_TTL_MS = 10 * 60 * 1000;
+// Bounds both memory (the cache holds full extracted content per URL) and
+// how far pagination can run for one page — a defensive cap, not a
+// request-time reject like mojo-ai3's (pagination alone already bounds any
+// single response to CONTENT_CHUNK_SIZE).
+const MAX_CACHED_CONTENT_CHARS = 500_000;
 
 const HTML_CONTENT_TYPES = new Set(["text/html", "application/xhtml+xml"]);
 const JSON_CONTENT_TYPES = new Set(["application/json", "application/ld+json"]);
@@ -32,6 +39,8 @@ interface ExtractedPage {
   readonly contentType: string | null;
   readonly content: string;
   readonly extractorType?: string;
+  /** Set when extraction fell back to the fast-DOM path because Defuddle itself threw — surfaced so a systematic Defuddle failure isn't silently invisible. */
+  readonly extractionWarning?: string;
   readonly fetchedAt: string;
 }
 
@@ -174,18 +183,20 @@ function fastPathFields(dom: JSDOM, url: string): { content: string; title: stri
   };
 }
 
-async function extractHtml(html: string, url: string): Promise<Omit<ExtractedPage, "url" | "contentType" | "fetchedAt">> {
+function newDom(html: string, url: string): JSDOM {
   const virtualConsole = new VirtualConsole(); // suppress noisy page-script console spam from jsdom
-  const dom = new JSDOM(html, { url, virtualConsole });
+  return new JSDOM(html, { url, virtualConsole });
+}
 
+async function extractHtml(html: string, url: string): Promise<Omit<ExtractedPage, "url" | "contentType" | "fetchedAt">> {
   if (html.length >= FAST_PATH_HTML_THRESHOLD) {
-    const fast = fastPathFields(dom, url);
+    const fast = fastPathFields(newDom(html, url), url);
     return { ...fast, author: null, published: null, description: null, site: fast.domain };
   }
 
   try {
     const result = await withTimeout(
-      Defuddle(dom, url, { markdown: true, removeImages: true }),
+      Defuddle(newDom(html, url), url, { markdown: true, removeImages: true }),
       DEFUDDLE_TIMEOUT_MS,
       `Defuddle extraction exceeded ${DEFUDDLE_TIMEOUT_MS}ms`,
     );
@@ -201,8 +212,13 @@ async function extractHtml(html: string, url: string): Promise<Omit<ExtractedPag
       site: result.site || null,
       ...(result.extractorType ? { extractorType: result.extractorType } : {}),
     };
-  } catch {
-    const fast = fastPathFields(dom, url);
+  } catch (cause) {
+    // A FRESH dom, not the one just handed to Defuddle: extraction libraries
+    // commonly mutate their input in place while scoring, so the instance
+    // Defuddle threw on may already be partially stripped — falling back on
+    // it risked returning wrong (not just degraded) content.
+    const fast = fastPathFields(newDom(html, url), url);
+    const message = cause instanceof Error ? cause.message : String(cause);
     return {
       ...fast,
       author: null,
@@ -210,8 +226,49 @@ async function extractHtml(html: string, url: string): Promise<Omit<ExtractedPag
       description: null,
       site: fast.domain,
       extractorType: "fast-dom-fallback",
+      extractionWarning: `Defuddle extraction failed, used fallback: ${message}`,
     };
   }
+}
+
+interface GuardedResponse {
+  readonly status: number;
+  readonly ok: boolean;
+  readonly text: string;
+  readonly url: string;
+  readonly contentType: string | undefined;
+}
+
+/**
+ * Fetches `url`, following redirects MANUALLY (not via `fetch`'s automatic
+ * handling) so every hop — including the initial URL — can be checked by
+ * `assertPublicHttpUrl` before being followed. A public URL that redirects
+ * to a private/internal address is exactly the SSRF bypass automatic
+ * redirect-following would otherwise allow straight through.
+ */
+async function fetchTextGuarded(url: string): Promise<GuardedResponse> {
+  let current = url;
+  for (let hop = 0; ; hop++) {
+    await assertPublicHttpUrl(current);
+    const res = await fetchLimited(current, { timeoutMs: FETCH_TIMEOUT_MS, redirect: "manual" });
+
+    const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
+    if (location) {
+      if (hop >= MAX_REDIRECTS) throw new Error(`too many redirects (>${MAX_REDIRECTS}) while fetching ${url}`);
+      current = new URL(location, current).toString();
+      continue;
+    }
+
+    const text = await readCapped(res, MAX_RESPONSE_BYTES);
+    const contentType = res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+    return { status: res.status, ok: res.ok, text, url: res.url || current, contentType };
+  }
+}
+
+/** Bounds both cache memory and pagination depth for one page — see MAX_CACHED_CONTENT_CHARS. */
+function capContent(content: string): string {
+  if (content.length <= MAX_CACHED_CONTENT_CHARS) return content;
+  return `${content.slice(0, MAX_CACHED_CONTENT_CHARS)}\n\n[content truncated at ${MAX_CACHED_CONTENT_CHARS} characters]`;
 }
 
 async function fetchAndExtract(url: string): Promise<ExtractedPage> {
@@ -219,7 +276,7 @@ async function fetchAndExtract(url: string): Promise<ExtractedPage> {
   const cached = pageCache.get(normalized);
   if (cached) return cached;
 
-  const res = await fetchText(normalized, { timeoutMs: FETCH_TIMEOUT_MS, maxBytes: MAX_RESPONSE_BYTES });
+  const res = await fetchTextGuarded(normalized);
   if (!res.ok) throw new Error(`request failed with status ${res.status}`);
 
   const htmlContent = isHtmlContentType(res.contentType);
@@ -244,7 +301,7 @@ async function fetchAndExtract(url: string): Promise<ExtractedPage> {
       wordCount: countWords(content),
       site: parsedUrl.hostname,
       contentType: res.contentType ?? null,
-      content,
+      content: capContent(content),
       fetchedAt: new Date().toISOString(),
     };
   } else {
@@ -252,18 +309,28 @@ async function fetchAndExtract(url: string): Promise<ExtractedPage> {
     if (!extracted.content) {
       throw new Error(`no readable text extracted from ${res.url} — it may be behind a consent or paywall screen`);
     }
-    page = { ...extracted, url: res.url, contentType: res.contentType ?? null, fetchedAt: new Date().toISOString() };
+    page = {
+      ...extracted,
+      content: capContent(extracted.content),
+      url: res.url,
+      contentType: res.contentType ?? null,
+      fetchedAt: new Date().toISOString(),
+    };
   }
 
   pageCache.set(normalized, page, CACHE_TTL_MS);
   return page;
 }
 
-function paginate(content: string, startIndex: number): { totalLength: number; slice: string; hasMore: boolean } {
+function paginate(
+  content: string,
+  startIndex: number,
+): { totalLength: number; slice: string; hasMore: boolean; nextIndex: number | undefined } {
   const totalLength = content.length;
-  const slice = content.slice(startIndex, startIndex + CONTENT_CHUNK_SIZE);
-  const hasMore = startIndex + CONTENT_CHUNK_SIZE < totalLength;
-  return { totalLength, slice, hasMore };
+  const nextIndex = startIndex + CONTENT_CHUNK_SIZE;
+  const slice = content.slice(startIndex, nextIndex);
+  const hasMore = nextIndex < totalLength;
+  return { totalLength, slice, hasMore, nextIndex: hasMore ? nextIndex : undefined };
 }
 
 export function webReaderTool(): ToolDefinition {
@@ -273,7 +340,7 @@ export function webReaderTool(): ToolDefinition {
     tool: tool({
       description:
         "Fetch a webpage and extract its content as clean Markdown with metadata (title, author, published date, description). " +
-        "Use startIndex to paginate through long content — the response includes totalLength and hasMore when truncated.",
+        "Use startIndex to paginate through long content — when hasMore is true, the response's nextIndex is the exact startIndex to pass to continue reading.",
       inputSchema: z.object({
         url: z.string().describe("Absolute URL to fetch (https://example.com/article)."),
         startIndex: z
@@ -281,18 +348,18 @@ export function webReaderTool(): ToolDefinition {
           .int()
           .nonnegative()
           .optional()
-          .describe("Character offset to resume from — set to the previous response's totalLength boundary to continue reading."),
+          .describe("Character offset to resume from — pass the previous response's nextIndex verbatim (NOT totalLength) to continue reading."),
       }),
       execute: async ({ url, startIndex }) => {
         const page = await fetchAndExtract(url);
-        const { totalLength, slice, hasMore } = paginate(page.content, startIndex ?? 0);
-        return { ...page, content: slice, totalLength, startIndex: startIndex ?? 0, hasMore };
+        const { totalLength, slice, hasMore, nextIndex } = paginate(page.content, startIndex ?? 0);
+        return { ...page, content: slice, totalLength, startIndex: startIndex ?? 0, hasMore, nextIndex };
       },
     }),
     guidance: {
       id: "tool-web-reader",
       title: "web_reader",
-      body: `Call to fetch a URL's full content — after web_search (snippets alone are not enough to answer from) or when the user shares a link. If hasMore is true, call again with startIndex set to the previous response's totalLength to continue reading.`,
+      body: `Call to fetch a URL's full content — after web_search (snippets alone are not enough to answer from) or when the user shares a link. If hasMore is true, call again with startIndex set to the response's nextIndex value (NOT totalLength — that is the full document length, not a valid offset).`,
     },
   };
 }

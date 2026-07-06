@@ -162,4 +162,47 @@ describe("recordDurableTranscripts", () => {
 
     expect(log.events().some((e) => e.kind === "tool-transcript")).toBe(false);
   });
+
+  test("truncates long string fields (e.g. paste's uploaded file content) rather than storing them in full — a durable transcript replays into every future prompt", async () => {
+    const bigContent = "x".repeat(2000);
+    const echo = tool({
+      description: "echo",
+      inputSchema: z.object({ title: z.string(), content: z.string() }),
+      execute: async ({ title, content }) => ({ id: ":abc123", url: "https://mojo.v00l.com/:abc123", title, content }),
+    });
+    const model = new MockLanguageModelV4({
+      doGenerate: [toolCallStep("echo", { title: "My Paste", content: bigContent }), textStep("done")],
+    });
+    const log = logWith("go");
+    const result = await runExchange(log, TURN, { model, instructions: "x", tools: { echo }, maxSteps: 4 });
+
+    recordDurableTranscripts(log, result, new Set(["echo"]), NOW);
+
+    const transcript = log.events().find((e) => e.kind === "tool-transcript") as any;
+    // Short, useful fields survive intact...
+    expect(transcript.input.title).toBe("My Paste");
+    expect(transcript.output.id).toBe(":abc123");
+    expect(transcript.output.url).toBe("https://mojo.v00l.com/:abc123");
+    // ...but the large field is capped, not stored verbatim.
+    expect(transcript.input.content.length).toBeLessThan(bigContent.length);
+    expect(transcript.input.content).toContain("truncated");
+    expect(transcript.output.content).toContain("truncated");
+  });
+
+  test("does not truncate a string at or under the cap", async () => {
+    const echo = tool({
+      description: "echo",
+      inputSchema: z.object({ note: z.string() }),
+      execute: async ({ note }) => ({ note }),
+    });
+    const shortNote = "y".repeat(500); // exactly at the cap
+    const model = new MockLanguageModelV4({ doGenerate: [toolCallStep("echo", { note: shortNote }), textStep("done")] });
+    const log = logWith("go");
+    const result = await runExchange(log, TURN, { model, instructions: "x", tools: { echo }, maxSteps: 4 });
+
+    recordDurableTranscripts(log, result, new Set(["echo"]), NOW);
+
+    const transcript = log.events().find((e) => e.kind === "tool-transcript") as any;
+    expect(transcript.output.note).toBe(shortNote);
+  });
 });

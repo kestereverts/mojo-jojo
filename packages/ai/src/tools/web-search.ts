@@ -51,11 +51,11 @@ export function webSearchTool(): ToolDefinition {
         const cached = resultCache.get(key);
         if (cached) return { query, results: cached };
 
+        const apiKey = requireApiKey();
         if (!rateLimiter.tryConsume()) {
           throw new Error("web_search is rate-limited right now — try again shortly");
         }
 
-        const apiKey = requireApiKey();
         const params = new URLSearchParams({ q: query.trim(), count: "10" });
         const data = await fetchJson<BraveSearchResponse>(
           `https://api.search.brave.com/res/v1/web/search?${params.toString()}`,

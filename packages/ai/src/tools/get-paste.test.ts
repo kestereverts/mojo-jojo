@@ -25,6 +25,7 @@ describe("get_paste — ID/URL parsing (the URL-API modernization)", () => {
     ["GESjAk", "https://mojo.v00l.com/api/paste/:GESjAk"], // bare ID, colon added
     ["https://mojo.v00l.com/:GESjAk", "https://mojo.v00l.com/api/paste/:GESjAk"], // full URL
     ["  :GESjAk  ", "https://mojo.v00l.com/api/paste/:GESjAk"], // whitespace trimmed
+    ["https://mojo.v00l.com/:GESjAk/", "https://mojo.v00l.com/api/paste/:GESjAk"], // trailing slash stripped (review finding)
   ];
 
   for (const [input, expectedUrl] of cases) {
@@ -42,7 +43,17 @@ describe("get_paste — ID/URL parsing (the URL-API modernization)", () => {
 
   test("a URL with no path segment throws a clear error rather than hitting the API with an empty ID", async () => {
     process.env.MOJO_PORTAL_API_KEY = "test-key";
-    expect(execute({ id: "https://mojo.v00l.com/" }, {} as never)).rejects.toThrow(/could not extract a paste ID/);
+    expect(execute({ id: "https://mojo.v00l.com/" }, {} as never)).rejects.toThrow(/could not extract a valid paste ID/);
+  });
+
+  test("a bare colon (no ID characters) is rejected rather than silently sent to the API (review finding)", async () => {
+    process.env.MOJO_PORTAL_API_KEY = "test-key";
+    expect(execute({ id: ":" }, {} as never)).rejects.toThrow(/could not extract a valid paste ID/);
+  });
+
+  test("a bare ID with a query-string-like tail is rejected rather than silently included in the ID (review finding)", async () => {
+    process.env.MOJO_PORTAL_API_KEY = "test-key";
+    expect(execute({ id: ":GESjAk?x=1" }, {} as never)).rejects.toThrow(/could not extract a valid paste ID/);
   });
 });
 

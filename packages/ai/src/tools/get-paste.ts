@@ -20,6 +20,13 @@ function extractErrorMessage(body: string): string {
   }
 }
 
+// Every real paste ID observed from the live portal (`:GESjAk`, `:wYLcLo`,
+// `:8xYSMH`, ...) is a colon followed by one or more alphanumerics — used as
+// a final validation so a malformed input (trailing slash, a bare ":", a
+// query-string tail on a non-URL input) fails clearly instead of silently
+// producing a wrong ID that still gets sent to the API.
+const PASTE_ID_PATTERN = /^:[A-Za-z0-9]+$/;
+
 /**
  * Accepts either a bare paste ID (`:GESjAk`, with or without the leading
  * colon) or a full portal URL (`https://mojo.v00l.com/:GESjAk`) — parsed via
@@ -30,12 +37,15 @@ function extractPasteId(input: string): string {
   const trimmed = input.trim();
   let id: string;
   try {
-    id = new URL(trimmed).pathname.replace(/^\//, "");
+    id = new URL(trimmed).pathname.replace(/^\//, "").replace(/\/$/, "");
   } catch {
-    id = trimmed.replace(/^\//, "");
+    id = trimmed.replace(/^\//, "").replace(/\/$/, "");
   }
-  if (!id) throw new Error(`could not extract a paste ID from "${input}"`);
-  return id.startsWith(":") ? id : `:${id}`;
+  const candidate = id.startsWith(":") ? id : `:${id}`;
+  if (!PASTE_ID_PATTERN.test(candidate)) {
+    throw new Error(`could not extract a valid paste ID from "${input}"`);
+  }
+  return candidate;
 }
 
 export function getPasteTool(): ToolDefinition {

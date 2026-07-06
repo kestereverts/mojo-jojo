@@ -39,6 +39,33 @@ describe("web_reader — HTML extraction", () => {
     globalThis.fetch = mockFetchReturning("<html><body></body></html>", "text/html", 200);
     expect(execute({ url: "https://example.com/unique-2" }, {} as never)).rejects.toThrow(/no readable text extracted/);
   });
+
+  test("a Defuddle failure falls back to fast-dom extraction with a surfaced warning (not silently), using a FRESH dom rather than one Defuddle may have mutated before throwing", async () => {
+    // A real Defuddle crash is genuinely reproducible (pathologically deep
+    // HTML nesting throws "Maximum call stack size exceeded" — confirmed by
+    // hand), but far too slow for a unit test (tens of seconds even at a
+    // few thousand levels of nesting). Mocking the module gives the same
+    // catch-path coverage in milliseconds. Uses a fresh module instance
+    // (mock.module + a cache-busting dynamic import) so the mock doesn't
+    // affect this file's other tests, which already bound the REAL
+    // defuddle/node via their own top-level static import before this runs.
+    const { mock } = await import("bun:test");
+    mock.module("defuddle/node", () => ({
+      Defuddle: async () => {
+        throw new Error("simulated Defuddle failure");
+      },
+    }));
+    const { webReaderTool: freshTool } = await import(`./web-reader.ts?isolate=${Date.now()}`);
+    const freshExecute = freshTool().tool.execute!;
+
+    globalThis.fetch = mockFetchReturning(ARTICLE_HTML, "text/html", 200);
+    const result = (await freshExecute({ url: "https://example.com/unique-10" }, {} as never)) as any;
+
+    expect(result.extractorType).toBe("fast-dom-fallback");
+    expect(result.extractionWarning).toContain("simulated Defuddle failure");
+    // The fast-dom fallback still extracts real content correctly.
+    expect(result.content).toContain("Hello World");
+  });
 });
 
 describe("web_reader — non-HTML text-based content", () => {
@@ -61,17 +88,38 @@ describe("web_reader — non-HTML text-based content", () => {
 });
 
 describe("web_reader — pagination", () => {
-  test("paginates long content and reports hasMore/totalLength correctly", async () => {
+  test("paginates long content and reports hasMore/totalLength/nextIndex correctly", async () => {
     const longText = "x".repeat(25_000);
     globalThis.fetch = mockFetchReturning(longText, "text/plain", 200);
     const first = (await execute({ url: "https://example.com/unique-6.txt" }, {} as never)) as any;
     expect(first.content.length).toBe(20_000);
     expect(first.totalLength).toBe(25_000);
     expect(first.hasMore).toBe(true);
+    expect(first.nextIndex).toBe(20_000);
 
-    const second = (await execute({ url: "https://example.com/unique-6.txt", startIndex: 20_000 }, {} as never)) as any;
+    const second = (await execute({ url: "https://example.com/unique-6.txt", startIndex: first.nextIndex }, {} as never)) as any;
     expect(second.content.length).toBe(5_000);
     expect(second.hasMore).toBe(false);
+    expect(second.nextIndex).toBeUndefined();
+  });
+
+  test("following the documented protocol (startIndex = previous nextIndex, NOT totalLength) reconstructs the full content — regression for a bug caught in review where the guidance told the model to use totalLength, which is always past the end", async () => {
+    const original = "y".repeat(45_000);
+    globalThis.fetch = mockFetchReturning(original, "text/plain", 200);
+
+    let startIndex: number | undefined = 0;
+    let reconstructed = "";
+    let calls = 0;
+    while (startIndex !== undefined) {
+      calls++;
+      if (calls > 10) throw new Error("test guard: too many pagination calls");
+      const page = (await execute({ url: "https://example.com/unique-9.txt", startIndex }, {} as never)) as any;
+      reconstructed += page.content;
+      startIndex = page.hasMore ? page.nextIndex : undefined;
+    }
+
+    expect(reconstructed).toBe(original);
+    expect(calls).toBe(3); // 45_000 / 20_000, rounded up
   });
 });
 

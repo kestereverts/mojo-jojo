@@ -62,6 +62,25 @@ describe("web_search", () => {
     expect(execute({ query: "bun-search-query-4" }, {} as never)).rejects.toThrow(/BRAVE_SEARCH_API_KEY/);
   });
 
+  test("a missing API key is rejected BEFORE consuming a rate-limit token (review finding)", async () => {
+    const { webSearchTool: freshTool } = await import(`./web-search.ts?isolate=${Date.now()}`);
+    const execute2 = freshTool().tool.execute!;
+    delete process.env.BRAVE_SEARCH_API_KEY;
+
+    for (let i = 0; i < 5; i++) {
+      await expect(execute2({ query: `no-key-query-${i}` }, {} as never)).rejects.toThrow(/BRAVE_SEARCH_API_KEY/);
+    }
+
+    // The token bucket must still be fully available (15 tokens) — none of
+    // the misconfigured-key attempts above should have spent one.
+    process.env.BRAVE_SEARCH_API_KEY = "test-key";
+    globalThis.fetch = (async () => jsonResponse({ web: { results: [] } })) as unknown as typeof fetch;
+    for (let i = 0; i < 15; i++) {
+      await execute2({ query: `token-bucket-query-${i}` }, {} as never);
+    }
+    await expect(execute2({ query: "one too many" }, {} as never)).rejects.toThrow(/rate-limited/);
+  });
+
   test("a non-2xx response throws", async () => {
     process.env.BRAVE_SEARCH_API_KEY = "test-key";
     globalThis.fetch = (async () => new Response("rate limited", { status: 429 })) as unknown as typeof fetch;

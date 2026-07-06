@@ -8,8 +8,13 @@ export interface FetchLimits {
   readonly maxBytes?: number;
 }
 
-/** Fetch with a timeout (aborts the request) and a stable, honest User-Agent. */
-async function fetchLimited(url: string, init: FetchLimits & RequestInit = {}): Promise<Response> {
+/**
+ * Fetch with a timeout (aborts the request) and a stable, honest User-Agent.
+ * Exported for callers (e.g. `web-reader.ts`) that need to drive their own
+ * redirect loop instead of relying on `fetch`'s automatic following — e.g. to
+ * validate each hop's target before following it.
+ */
+export async function fetchLimited(url: string, init: FetchLimits & RequestInit = {}): Promise<Response> {
   const { timeoutMs = DEFAULT_TIMEOUT_MS, maxBytes: _maxBytes, ...rest } = init;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -24,12 +29,38 @@ async function fetchLimited(url: string, init: FetchLimits & RequestInit = {}): 
   }
 }
 
-async function readCapped(res: Response, maxBytes: number): Promise<string> {
-  const buf = await res.arrayBuffer();
-  if (buf.byteLength > maxBytes) {
-    throw new Error(`response too large (${buf.byteLength} bytes, max ${maxBytes})`);
+/**
+ * Read a response body as text, aborting as soon as the running byte count
+ * exceeds `maxBytes` rather than buffering the whole body first — a hostile
+ * or just very large response never gets fully materialized in memory.
+ */
+export async function readCapped(res: Response, maxBytes: number): Promise<string> {
+  const reader = res.body?.getReader();
+  if (!reader) {
+    // No readable stream (e.g. an empty body) — nothing to cap.
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength > maxBytes) throw new Error(`response too large (${buf.byteLength} bytes, max ${maxBytes})`);
+    return new TextDecoder().decode(buf);
   }
-  return new TextDecoder().decode(buf);
+
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        throw new Error(`response too large (exceeded ${maxBytes} bytes)`);
+      }
+      chunks.push(decoder.decode(value, { stream: true }));
+    }
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+  chunks.push(decoder.decode());
+  return chunks.join("");
 }
 
 /** Fetch and parse JSON. Throws on a non-2xx status or an oversized body. */
