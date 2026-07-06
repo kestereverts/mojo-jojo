@@ -81,4 +81,22 @@ describe("renderPrompt", () => {
     expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "user"]);
     expect(messages[1]?.content).toBe('[research_topic briefing] {"summary":"x"}');
   });
+
+  test("a compaction event renders as a leading user-role summary message", () => {
+    const messages = renderPrompt(
+      [
+        {
+          kind: "compaction",
+          at: "2026-07-03T11:00:00.000Z",
+          coversUntil: "2026-07-03T10:59:00.000Z",
+          summary: "Alice and Bob discussed the weather.",
+          eventCount: 12,
+        },
+        chat("bob", "what did we say earlier?"),
+      ],
+      turn,
+    );
+    expect(messages.map((m) => m.role)).toEqual(["user", "user", "user"]);
+    expect(messages[0]?.content).toBe("[Earlier conversation summary] Alice and Bob discussed the weather.");
+  });
 });

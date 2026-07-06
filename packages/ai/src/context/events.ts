@@ -78,12 +78,32 @@ export interface SubagentBriefingEvent {
   readonly briefing: unknown;
 }
 
+/**
+ * The durable trace of a compaction (M8): `ContextLog.compact()` physically
+ * REPLACES a prefix of older events with one of these — the log never grows
+ * without bound even if `historyLimit` is never hit, and a compaction's own
+ * timestamp/coverage/count are queryable audit trail, not just a summary
+ * string. `renderPrompt` renders it as a leading "[Earlier conversation
+ * summary]" message — the single render path is preserved; there is no
+ * separate "how to replay a compaction" code path.
+ */
+export interface CompactionEvent {
+  readonly kind: "compaction";
+  readonly at: string;
+  /** ISO timestamp of the newest event this summary covers (inclusive) — audit trail, not consumed by rendering. */
+  readonly coversUntil: string;
+  readonly summary: string;
+  /** How many events this compaction replaced — audit trail, not consumed by rendering. */
+  readonly eventCount: number;
+}
+
 /** Everything that may enter durable conversation memory. */
 export type ContextEvent =
   | ChatMessageEvent
   | BotReplyEvent
   | ToolTranscriptEvent
-  | SubagentBriefingEvent;
+  | SubagentBriefingEvent
+  | CompactionEvent;
 
 /**
  * Ephemeral, turn-scoped context: rendered into the live prompt, never

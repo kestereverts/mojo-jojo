@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { unlink } from "node:fs/promises";
 import { cascadeModelOverride, main } from "./index.ts";
 import type { ModelRoles } from "../models.ts";
+import { openContextDb, SqliteContextLog } from "../context/sqlite-log.ts";
+import type { ChatMessageEvent } from "../context/events.ts";
 
 /** Run `main` with stdout/stderr captured (kept quiet) so we can assert on both. */
 async function run(argv: string[]): Promise<{ code: number; out: string; err: string }> {
@@ -30,8 +32,26 @@ async function tmpConfig(body: string): Promise<string> {
   return path;
 }
 afterAll(async () => {
-  await Promise.all(tmpFiles.map((p) => unlink(p).catch(() => {})));
+  await Promise.all(tmpFiles.flatMap((p) => [p, `${p}-wal`, `${p}-shm`]).map((p) => unlink(p).catch(() => {})));
 });
+
+function tmpDbPath(): string {
+  const path = join(tmpdir(), `mojo-ai-cli-db-${tmpFiles.length}-${Date.now()}.sqlite`);
+  tmpFiles.push(path);
+  return path;
+}
+
+function chat(text: string, at = "2026-01-01T00:00:00.000Z"): ChatMessageEvent {
+  return { kind: "chat-message", at, speaker: { nick: "a", trust: "nick" }, text, addressed: true };
+}
+
+/** Seeds a conversation's events directly (bypassing `chat`, which always runs a real exchange) so `history`/`compact` CLI tests stay network-free. */
+function seedDb(path: string, conversation: string, count: number): void {
+  const db = openContextDb(path);
+  const log = new SqliteContextLog(db, conversation, 10_000);
+  for (let i = 0; i < count; i++) log.append(chat(`msg ${i}`, `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z`));
+  db.close();
+}
 
 const MODELS: ModelRoles = {
   chat: "openai/gpt-5.4-mini",
@@ -94,14 +114,6 @@ describe("main — usage & validation exit codes (no network)", () => {
     const r = await run(["chat", "hi", "--config", badRange]);
     expect(r.code).toBe(2);
     expect(r.err).toContain("[1, 10]");
-  });
-
-  test("--db (still deferred) prints an honest notice; --via (wired since M3) does not", async () => {
-    // Pair with a validation error so no exchange runs.
-    const r = await run(["chat", "hi", "--via", "Telegram", "--db", "/tmp/x.db", "--max-steps", "0"]);
-    expect(r.code).toBe(2);
-    expect(r.err).toContain("--db is recognized but not wired until M8");
-    expect(r.err).not.toContain("--via");
   });
 
   test("--config [modules.mojo-ai.models] bad role type surfaces the module's own path in the error", async () => {
@@ -184,5 +196,82 @@ describe("main — research command (network-dependent, real subagent)", () => {
     expect(r.code).toBe(1);
     expect(r.err).toContain("unknown model provider");
     expect(r.err).toContain("totally-bogus-provider");
+  });
+});
+
+describe("main — history command (M8, network-free)", () => {
+  test("needs --db", async () => {
+    const r = await run(["history"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("history needs --db");
+  });
+
+  test("dumps a seeded conversation's durable events, human and JSON", async () => {
+    const path = tmpDbPath();
+    seedDb(path, "debug", 3);
+
+    const human = await run(["history", "--db", path]);
+    expect(human.code).toBe(0);
+    expect(human.out).toContain("msg 0");
+    expect(human.out).toContain("msg 2");
+
+    const json = await run(["history", "--db", path, "--json"]);
+    expect(json.code).toBe(0);
+    const events = JSON.parse(json.out);
+    expect(events).toHaveLength(3);
+    expect(events[0]).toMatchObject({ kind: "chat-message", text: "msg 0" });
+  });
+
+  test("respects --conversation — a different conversation key sees no events", async () => {
+    const path = tmpDbPath();
+    seedDb(path, "debug", 2);
+    const r = await run(["history", "--db", path, "--conversation", "#other", "--json"]);
+    expect(JSON.parse(r.out)).toEqual([]);
+  });
+
+  test("an empty conversation prints a clear message, not a crash or blank output", async () => {
+    const path = tmpDbPath();
+    seedDb(path, "debug", 0);
+    const r = await run(["history", "--db", path]);
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("no durable events");
+  });
+});
+
+describe("main — compact command (M8)", () => {
+  test("needs --db", async () => {
+    const r = await run(["compact"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("compact needs --db");
+  });
+
+  test("below the default trigger threshold, reports not-compacted without any model call (network-free)", async () => {
+    const path = tmpDbPath();
+    seedDb(path, "debug", 5); // well under the default triggerEvents (240)
+    const r = await run(["compact", "--db", path, "--json"]);
+    expect(r.code).toBe(0);
+    expect(JSON.parse(r.out)).toEqual({ compacted: false, eventsBefore: 5, eventsAfter: 5 });
+  });
+
+  test("--force with too few events to compact (below keepTail) reports not-compacted, exit 1, still no model call", async () => {
+    const path = tmpDbPath();
+    seedDb(path, "debug", 2); // below the default keepTail (60) even when forced
+    const r = await run(["compact", "--db", path, "--force", "--json"]);
+    expect(r.code).toBe(1);
+    expect(JSON.parse(r.out)).toEqual({ compacted: false, eventsBefore: 2, eventsAfter: 2 });
+  });
+
+  test("history reflects a compaction that already happened, read back from the same db", async () => {
+    const path = tmpDbPath();
+    const db = openContextDb(path);
+    const log = new SqliteContextLog(db, "debug", 10_000);
+    log.append(chat("1"));
+    log.append(chat("2"));
+    log.compact(1, { kind: "compaction", at: "t", coversUntil: "t", summary: "already summarized", eventCount: 2 });
+    db.close();
+
+    const r = await run(["history", "--db", path, "--json"]);
+    const events = JSON.parse(r.out);
+    expect(events).toEqual([{ kind: "compaction", at: "t", coversUntil: "t", summary: "already summarized", eventCount: 2 }]);
   });
 });

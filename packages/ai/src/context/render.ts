@@ -1,5 +1,12 @@
 import type { ModelMessage } from "ai";
-import type { ChatMessageEvent, ContextEvent, SubagentBriefingEvent, ToolTranscriptEvent, TurnContext } from "./events.ts";
+import type {
+  ChatMessageEvent,
+  CompactionEvent,
+  ContextEvent,
+  SubagentBriefingEvent,
+  ToolTranscriptEvent,
+  TurnContext,
+} from "./events.ts";
 
 /**
  * Project the durable log + the ephemeral turn context into provider-agnostic
@@ -46,6 +53,15 @@ export function renderPrompt(events: readonly ContextEvent[], turn: TurnContext)
         flushChat();
         messages.push({ role: "assistant", content: subagentBriefingLine(event) });
         break;
+      case "compaction":
+        // A user-role message (not assistant) — it's a summary of what the
+        // USER SIDE of the conversation (and the bot's replies within it)
+        // covered, standing in for the messages it replaced. Naturally
+        // renders first: compaction always replaces the OLDEST prefix, so
+        // it's physically first in `events` whenever one exists.
+        flushChat();
+        messages.push({ role: "user", content: compactionLine(event) });
+        break;
     }
   }
   flushChat();
@@ -72,4 +88,8 @@ function toolTranscriptLine(event: ToolTranscriptEvent): string {
 
 function subagentBriefingLine(event: SubagentBriefingEvent): string {
   return `[${event.agent} briefing] ${JSON.stringify(event.briefing)}`;
+}
+
+function compactionLine(event: CompactionEvent): string {
+  return `[Earlier conversation summary] ${event.summary}`;
 }

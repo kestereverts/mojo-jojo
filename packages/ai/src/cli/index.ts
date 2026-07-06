@@ -3,12 +3,16 @@ import { parseArgs } from "node:util";
 import { stderr, stdout } from "node:process";
 import { resolve as pathResolve } from "node:path";
 import { ConfigError } from "@mojo-jojo/bot";
+import type { Database } from "bun:sqlite";
 import { mojoAiModule } from "../mojo-ai.ts";
 import { loadFriendsFile, type Friend } from "../identity/speakers.ts";
 import { buildToolSet, defaultToolDefinitions } from "../tools/index.ts";
 import { runSubagent } from "../subagents/define.ts";
 import { researchSubagent } from "../subagents/research.ts";
 import type { ModelRoles } from "../models.ts";
+import { openContextDb, SqliteContextLog } from "../context/sqlite-log.ts";
+import { maybeCompact } from "../context/compaction.ts";
+import type { ContextEvent } from "../context/events.ts";
 import { DebugHarness, parseContextEvents } from "./harness.ts";
 import { describeModelRoles, formatHuman, formatJson } from "./inspect.ts";
 import { runRepl } from "./repl.ts";
@@ -25,6 +29,18 @@ Usage:
                                                     standalone (no chat loop)
                                                     and dump its briefing +
                                                     timing
+  mojo-ai-debug history --db <path> [--conversation <id>] [--json]
+                                                    dump a conversation's durable
+                                                    events from a SQLite file —
+                                                    no exchange runs
+  mojo-ai-debug compact --db <path> [--conversation <id>] [--force] [--config <file>] [--json]
+                                                    run the M8 compactor against
+                                                    a conversation's persisted
+                                                    log; --force ignores the
+                                                    normal triggerEvents
+                                                    threshold (compacts as soon
+                                                    as there's more than
+                                                    keepTail events)
 
 Options:
   --as <name>            speaker identity: a nick, or (with --via) the
@@ -42,16 +58,17 @@ Options:
   --inject <file>        JSON file of event(s) to stage before the message
   --config <file>        read [modules.mojo-ai] through the SAME parseConfig the
                           live module uses, so CLI and live never disagree
+  --db <path>            SQLite file for durable, cross-restart conversation
+                          memory — chat/repl use it instead of an in-memory
+                          log when given; required for history/compact
+  --force                compact subcommand only — bypass triggerEvents
   --json                 emit machine-readable inspection
   --verbose              include rendered prompt, ephemera, and history
   --explain              show each M7 guard's decision (prompt-guard,
                           grounding, leak-detector) — guards themselves run
                           per --config's [guards] table (default: all on);
                           this flag only controls whether the CLI prints them
-  -h, --help             show this help
-
-Deferred (recognized, wired in later milestones):
-  --db <path>            SQLite persistence — lands in M8`;
+  -h, --help             show this help`;
 
 /** The module's own config type, imported structurally (the type isn't exported). */
 type MojoAiConfig = ReturnType<NonNullable<ReturnType<typeof mojoAiModule>["parseConfig"]>>;
@@ -77,6 +94,7 @@ export async function main(argv: string[]): Promise<number> {
         explain: { type: "boolean" },
         via: { type: "string" },
         db: { type: "string" },
+        force: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
     });
@@ -92,9 +110,6 @@ export async function main(argv: string[]): Promise<number> {
     stdout.write(`${USAGE}\n`);
     return 0;
   }
-
-  // Deferred flags: honest notice rather than silent no-op.
-  if (values.db !== undefined) stderr.write("note: --db is recognized but not wired until M8.\n");
 
   // Config load + flag validation raise UsageError → a clean exit 2 (not the
   // bin-level fatal-stack path). Exchange/network failures are handled inside
@@ -120,6 +135,13 @@ export async function main(argv: string[]): Promise<number> {
     // default) so a config's `tools.disabled` list is actually honored here —
     // the same list the live module reads via the same parseConfig.
     const registry = buildToolSet(defaultToolDefinitions({ models }), cliConfig.toolsDisabled);
+    // Same conversation key convention across chat/repl/history/compact — the
+    // harness itself has no per-conversation branching (unlike the live
+    // module's `logFor`), so the injected SqliteContextLog's own
+    // conversation key must match what `--conversation` labels the turn as,
+    // or these commands would silently look at different rows.
+    const dbConversation = values.conversation ?? "debug";
+    const db: Database | undefined = values.db ? openContextDb(values.db) : undefined;
 
     if (command === "chat") {
       const message = rest.join(" ").trim();
@@ -139,6 +161,7 @@ export async function main(argv: string[]): Promise<number> {
         durableToolNames: registry.durableNames,
         subagentToolNames: registry.subagentNames,
         guards: cliConfig.guards,
+        log: db ? new SqliteContextLog(db, dbConversation, cliConfig.historyLimit) : undefined,
       });
       if (values.inject) {
         for (const event of await readInjectFile(values.inject)) harness.inject(event);
@@ -156,6 +179,7 @@ export async function main(argv: string[]): Promise<number> {
             : formatHuman(outcome, { verbose: values.verbose, explain: values.explain, modelRoles })
         }\n`,
       );
+      db?.close();
       return outcome.error ? 1 : 0;
     }
 
@@ -172,6 +196,7 @@ export async function main(argv: string[]): Promise<number> {
         durableToolNames: registry.durableNames,
         subagentToolNames: registry.subagentNames,
         guards: cliConfig.guards,
+        log: db ? new SqliteContextLog(db, dbConversation, cliConfig.historyLimit) : undefined,
         as: values.as,
         account: values.account,
         via: values.via,
@@ -180,7 +205,40 @@ export async function main(argv: string[]): Promise<number> {
         explain: values.explain,
         modelRoles,
       });
+      db?.close();
       return 0;
+    }
+
+    if (command === "history") {
+      if (!db) {
+        stderr.write(`history needs --db <path>.\n\n${USAGE}\n`);
+        return 2;
+      }
+      const log = new SqliteContextLog(db, dbConversation, cliConfig.historyLimit);
+      const events = log.events();
+      stdout.write(
+        `${values.json ? JSON.stringify(events, null, 2) : formatHistoryHuman(dbConversation, events)}\n`,
+      );
+      db.close();
+      return 0;
+    }
+
+    if (command === "compact") {
+      if (!db) {
+        stderr.write(`compact needs --db <path>.\n\n${USAGE}\n`);
+        return 2;
+      }
+      const log = new SqliteContextLog(db, dbConversation, cliConfig.historyLimit);
+      const before = log.events().length;
+      // --force bypasses the normal triggerEvents threshold — compacts as
+      // soon as there's more than keepTail events, regardless of config.
+      const config = values.force ? { ...cliConfig.compaction, triggerEvents: cliConfig.compaction.keepTail } : cliConfig.compaction;
+      const compacted = await maybeCompact(log, config, { model: models.summarizer });
+      const after = log.events().length;
+      const result = { compacted, eventsBefore: before, eventsAfter: after };
+      stdout.write(`${values.json ? JSON.stringify(result, null, 2) : formatCompactHuman(result)}\n`);
+      db.close();
+      return compacted || !values.force ? 0 : 1;
     }
 
     if (command === "inject") {
@@ -269,6 +327,17 @@ function formatToolsJson(registry: ReturnType<typeof buildToolSet>): string {
     guidance: entry.guidance?.body ?? null,
   }));
   return JSON.stringify({ tools }, null, 2);
+}
+
+function formatHistoryHuman(conversation: string, events: readonly ContextEvent[]): string {
+  if (events.length === 0) return `(no durable events for conversation "${conversation}")`;
+  return events.map((e) => `[${e.kind}] ${JSON.stringify(e)}`).join("\n");
+}
+
+function formatCompactHuman(result: { compacted: boolean; eventsBefore: number; eventsAfter: number }): string {
+  return result.compacted
+    ? `compacted: ${result.eventsBefore} events -> ${result.eventsAfter} events`
+    : `not compacted (${result.eventsBefore} events — below the trigger threshold, or nothing left to compact)`;
 }
 
 function formatResearchHuman(briefing: Awaited<ReturnType<typeof runSubagent>>, wallMs: number): string {

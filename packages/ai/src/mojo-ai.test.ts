@@ -105,3 +105,45 @@ describe("mojoAiModule().parseConfig — [guards] (M7)", () => {
     expect(() => parse({ guards: "not-a-table" })).toThrow(ConfigError);
   });
 });
+
+describe("mojoAiModule().parseConfig — dbPath + [compaction] (M8)", () => {
+  test("dbPath is absent by default — in-memory only", () => {
+    expect(parse({}).dbPath).toBeUndefined();
+  });
+
+  test("dbPath is passed through when configured", () => {
+    expect(parse({ dbPath: "./data/mojo-ai.sqlite" }).dbPath).toBe("./data/mojo-ai.sqlite");
+  });
+
+  test("compaction defaults: enabled, triggerEvents=240, keepTail=60", () => {
+    expect(parse({}).compaction).toEqual({ enabled: true, triggerEvents: 240, keepTail: 60 });
+  });
+
+  test("each compaction field can be set independently", () => {
+    const config = parse({ compaction: { triggerEvents: 100, keepTail: 20 } });
+    expect(config.compaction).toEqual({ enabled: true, triggerEvents: 100, keepTail: 20 });
+  });
+
+  test("compaction can be disabled entirely", () => {
+    expect(parse({ compaction: { enabled: false } }).compaction.enabled).toBe(false);
+  });
+
+  test("rejects keepTail >= triggerEvents — nothing would be left to compact", () => {
+    try {
+      parse({ compaction: { triggerEvents: 50, keepTail: 50 } });
+      throw new Error("expected parseConfig to throw");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(ConfigError);
+      expect((cause as ConfigError).issues.join()).toContain("modules.mojo-ai.compaction.keepTail");
+    }
+  });
+
+  test("rejects an out-of-range triggerEvents/keepTail", () => {
+    expect(() => parse({ compaction: { triggerEvents: 1 } })).toThrow(ConfigError); // below the min of 2
+    expect(() => parse({ compaction: { keepTail: 0 } })).toThrow(ConfigError);
+  });
+
+  test("rejects a non-table `compaction` value", () => {
+    expect(() => parse({ compaction: "not-a-table" })).toThrow(ConfigError);
+  });
+});

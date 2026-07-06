@@ -5,6 +5,7 @@ import type { Friend } from "../identity/speakers.ts";
 import type { ModelRoles } from "../models.ts";
 import type { PromptSection } from "../prompt/sections.ts";
 import type { GuardConfig } from "../guards/pipeline.ts";
+import type { ContextLog } from "../context/log.ts";
 import { DebugHarness, parseContextEvents, type ChatOptions } from "./harness.ts";
 import { formatHuman, modelRoleLine, type ModelRoleStatus } from "./inspect.ts";
 
@@ -29,6 +30,15 @@ export interface ReplOptions extends ChatOptions {
   readonly subagentToolNames?: ReadonlySet<string>;
   /** Which M7 guards run — see `HarnessConfig.guards`'s doc (off by default there; the CLI passes the real config-driven value here). */
   readonly guards?: GuardConfig;
+  /**
+   * Inject a pre-populated log (e.g. a `SqliteContextLog` when `--db` is
+   * given). Note: `/reset` calls `newHarness(options)` again with this SAME
+   * `log` reference — for a `--db`-backed session `/reset` therefore does
+   * NOT clear anything (the persisted rows remain); that's deliberate, since
+   * the entire point of `--db` is that history survives, and a REPL command
+   * silently wiping a persistent conversation would be a surprising footgun.
+   */
+  readonly log?: ContextLog;
 }
 
 const HELP = `Commands:
@@ -122,6 +132,7 @@ function newHarness(options: ReplOptions): DebugHarness {
     durableToolNames: options.durableToolNames,
     subagentToolNames: options.subagentToolNames,
     guards: options.guards,
+    log: options.log,
   });
 }
 

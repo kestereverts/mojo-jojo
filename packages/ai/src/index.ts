@@ -4,6 +4,7 @@
 export type {
   BotReplyEvent,
   ChatMessageEvent,
+  CompactionEvent,
   ContextEvent,
   Speaker,
   SubagentBriefingEvent,
