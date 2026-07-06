@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai";
 import type { ContextEvent, Speaker, TurnContext } from "../context/events.ts";
 import type { ExchangeStep } from "../exchange.ts";
 import { resolveEmbeddingModel, resolveModel, type ModelRoles } from "../models.ts";
+import type { GuardExplain } from "../guards/pipeline.ts";
 import type { ChatOutcome, HarnessError } from "./harness.ts";
 
 /**
@@ -33,6 +34,10 @@ export interface Inspection {
    * (M3's CLI-verifiable surface for identity resolution).
    */
   readonly speaker: Speaker;
+  /** True when `guards.promptGuard` blocked this message before any exchange ran (M7's CLI-verifiable surface for the guard pipeline). */
+  readonly blocked: boolean;
+  /** Every enabled guard's decision this turn — empty object when no guards ran (see `HarnessConfig.guards`, off by default in the harness). */
+  readonly explain: GuardExplain;
 }
 
 /** One role's configured spec and whether it constructs a model without throwing (no network call). */
@@ -107,6 +112,8 @@ export function buildInspection(
     history: outcome.history,
     modelRoles: extra.modelRoles ?? null,
     speaker: outcome.speaker,
+    blocked: outcome.blocked,
+    explain: outcome.explain,
   };
 }
 
@@ -121,7 +128,7 @@ export function formatJson(outcome: ChatOutcome, extra: { modelRoles?: ModelRole
  */
 export function formatHuman(
   outcome: ChatOutcome,
-  opts: { verbose?: boolean; modelRoles?: ModelRoleStatus[] } = {},
+  opts: { verbose?: boolean; explain?: boolean; modelRoles?: ModelRoleStatus[] } = {},
 ): string {
   const i = buildInspection(outcome, { modelRoles: opts.modelRoles });
   const out: string[] = [];
@@ -134,6 +141,10 @@ export function formatHuman(
 
   if (i.error) {
     out.push(section("ERROR", errorLine(i.error)));
+  }
+
+  if (opts.explain && (i.blocked || Object.keys(i.explain).length > 0)) {
+    out.push(section("GUARDS", explainLines(i.blocked, i.explain).join("\n")));
   }
 
   out.push(section("REPLY", i.reply || "(no reply)"));
@@ -226,6 +237,38 @@ function speakerLine(speaker: Speaker): string {
   parts.push(`trust=${speaker.trust}`);
   parts.push(speaker.personId ? `personId=${speaker.personId}` : "personId=(no match)");
   return parts.join(" ");
+}
+
+/** One line per guard that actually ran this turn — the `--explain` surface. */
+function explainLines(blocked: boolean, explain: GuardExplain): string[] {
+  const lines: string[] = [];
+  if (explain.promptGuard) {
+    const g = explain.promptGuard;
+    lines.push(
+      `prompt-guard: ${g.allowed ? "allow" : "BLOCK"}` +
+        `${g.checkedByClassifier ? " (classifier)" : " (prefilter — no classifier call)"}` +
+        `${g.failedOpen ? " [FAILED OPEN]" : ""}` +
+        `${g.reason ? ` — ${g.reason}` : ""}`,
+    );
+  }
+  if (blocked) lines.push("  → exchange skipped; a refusal was sent instead");
+  if (explain.grounding) {
+    const g = explain.grounding;
+    lines.push(
+      `grounding: ${g.final.grounded ? "ok" : "STRIPPED"}${g.retried ? " (after 1 retry)" : ""}` +
+        `${g.final.ungroundedUrls.length ? ` — ${g.final.ungroundedUrls.join(", ")}` : ""}`,
+    );
+  }
+  if (explain.leakDetector) {
+    const l = explain.leakDetector;
+    lines.push(
+      `leak-detector: ${l.isLeak ? "BLOCKED" : "ok"}` +
+        `${l.via ? ` (via ${l.via}, similarity=${l.similarity.toFixed(2)})` : ""}` +
+        `${l.failedOpen ? " [FAILED OPEN]" : ""}` +
+        `${l.reason ? ` — ${l.reason}` : ""}`,
+    );
+  }
+  return lines.length > 0 ? lines : ["(no guards ran)"];
 }
 
 function errorLine(e: HarnessError): string {

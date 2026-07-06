@@ -11,14 +11,17 @@ import {
 } from "@mojo-jojo/bot";
 import type { PrivmsgEvent } from "@mojo-jojo/irc-client";
 import { InMemoryContextLog, type ContextLog } from "./context/log.ts";
-import { recordDurableTranscripts, recordSubagentBriefings, runExchange } from "./exchange.ts";
+import { recordDurableTranscripts, recordSubagentBriefings } from "./exchange.ts";
 import { toReplyLines } from "./reply.ts";
 import { buildToolSet, defaultToolDefinitions } from "./tools/index.ts";
-import type { ModelRoles } from "./models.ts";
+import { resolveEmbeddingModel, type ModelRoles } from "./models.ts";
 import { runChatMiddleware, type ChatMessage, type ChatMiddleware } from "./identity/middleware.ts";
 import { createRelayMiddleware, parseRelays, type RelayDefinition } from "./identity/relay.ts";
 import { loadFriendsFile, resolveSpeaker, type Friend } from "./identity/speakers.ts";
-import { buildDefaultInstructions } from "./prompt/instructions.ts";
+import { assembleInstructions } from "./prompt/sections.ts";
+import { buildDefaultSections } from "./prompt/instructions.ts";
+import { createLeakDetector, type LeakDetector } from "./guards/leak-detector.ts";
+import { runGuardedExchange, type GuardConfig, type GuardExplain } from "./guards/pipeline.ts";
 
 const DEFAULT_CHAT_MODEL = "openai/gpt-5.4-mini";
 const DEFAULT_EMBEDDING_MODEL = "openai/text-embedding-3-small";
@@ -49,6 +52,18 @@ interface MojoAiConfig {
   readonly friendsFile?: string;
   /** Tool names to exclude from the registry entirely — no entry, no guidance, never durable. */
   readonly toolsDisabled: readonly string[];
+  /** Which M7 guards run; all default on. Every guard fails open on its own error — never blocks, just logs loudly. */
+  readonly guards: GuardConfig;
+}
+
+/** `[modules.mojo-ai.guards]` — every guard defaults to enabled. */
+function parseGuardConfig(v: Validator, raw: Record<string, unknown>): GuardConfig {
+  const guardsRaw = v.optRecord(raw.guards, "modules.mojo-ai.guards") ?? {};
+  return {
+    promptGuard: v.optBoolean(guardsRaw.promptGuard, "modules.mojo-ai.guards.promptGuard") ?? true,
+    leakDetector: v.optBoolean(guardsRaw.leakDetector, "modules.mojo-ai.guards.leakDetector") ?? true,
+    grounding: v.optBoolean(guardsRaw.grounding, "modules.mojo-ai.guards.grounding") ?? true,
+  };
 }
 
 /**
@@ -112,8 +127,9 @@ export function mojoAiModule(): Module<MojoAiConfig> {
       const friendsFile = v.optNonEmptyString(raw.friendsFile, "modules.mojo-ai.friendsFile");
       const toolsRaw = v.optRecord(raw.tools, "modules.mojo-ai.tools") ?? {};
       const toolsDisabled = v.optStringArray(toolsRaw.disabled, "modules.mojo-ai.tools.disabled") ?? [];
+      const guards = parseGuardConfig(v, raw);
       v.throwIfAny();
-      return { models, historyLimit, maxSteps, replyLines, relays, friendsFile, toolsDisabled };
+      return { models, historyLimit, maxSteps, replyLines, relays, friendsFile, toolsDisabled, guards };
     },
     async setup(ctx) {
       const logs = new Map<string, ContextLog>();
@@ -125,7 +141,16 @@ export function mojoAiModule(): Module<MojoAiConfig> {
         defaultToolDefinitions({ models: ctx.config.models, signal: aborter.signal }),
         ctx.config.toolsDisabled,
       );
-      const instructions = buildDefaultInstructions(friends, guidance);
+      // Sections built once, here — both the instructions string AND the leak
+      // detector's per-section embeddings derive from this SAME list, so the
+      // detector can never silently drift from what's actually sent as
+      // instructions (the same single-source-of-truth reasoning as elsewhere
+      // in this module).
+      const sections = buildDefaultSections(friends, guidance);
+      const instructions = assembleInstructions(sections);
+      const leakDetector: LeakDetector | undefined = ctx.config.guards.leakDetector
+        ? await createLeakDetector(sections, resolveEmbeddingModel(ctx.config.models.embedding))
+        : undefined;
 
       const middlewareChain: ChatMiddleware[] = [
         createRelayMiddleware(ctx.config.relays, () => ctx.client.server?.caseMapper ?? null),
@@ -199,7 +224,7 @@ export function mojoAiModule(): Module<MojoAiConfig> {
                 // TODO: queue or interrupt (switchMap + abort) instead of dropping.
                 exhaustMap((msg) =>
                   defer(() =>
-                    runExchange(
+                    runGuardedExchange(
                       logFor(convoKey(msg.raw)),
                       {
                         nowUtc: new Date().toISOString(),
@@ -213,13 +238,19 @@ export function mojoAiModule(): Module<MojoAiConfig> {
                         maxSteps: ctx.config.maxSteps,
                         signal: aborter.signal,
                       },
+                      msg.text,
+                      ctx.config.guards,
+                      { classifierModel: ctx.config.models.classifier, leakDetector, signal: aborter.signal },
                     ),
                   ).pipe(
-                    map((result) => {
+                    map((outcome) => {
                       const log = logFor(convoKey(msg.raw));
-                      recordDurableTranscripts(log, result, durableNames);
-                      recordSubagentBriefings(log, result, subagentNames);
-                      return { msg, reply: result.text };
+                      if (outcome.result) {
+                        recordDurableTranscripts(log, outcome.result, durableNames);
+                        recordSubagentBriefings(log, outcome.result, subagentNames);
+                      }
+                      logGuardWarnings(ctx, convoKey(msg.raw), outcome.explain);
+                      return { msg, reply: outcome.reply };
                     }),
                     catchError((error) => {
                       ctx.log.warn(`exchange failed in ${convoKey(msg.raw)}`, error);
@@ -254,6 +285,28 @@ async function loadFriends(ctx: ModuleContext<MojoAiConfig>): Promise<readonly F
   for (const warning of warnings) ctx.log.warn(`friends file: ${warning}`);
   ctx.log.info(`loaded ${friends.length} known friend(s)`);
   return friends;
+}
+
+/**
+ * Guards fail open and never block on their own error (the M7 decision) —
+ * but both a genuine failure AND a genuine block/strip need to be LOUD, so
+ * an operator actually sees an extraction attempt or a hallucinated link
+ * rather than it silently passing through the pipeline unnoticed.
+ */
+function logGuardWarnings(ctx: ModuleContext<MojoAiConfig>, conversation: string, explain: GuardExplain): void {
+  const guard = explain.promptGuard;
+  if (guard?.failedOpen) ctx.log.warn(`guards.prompt-guard failed open in ${conversation}: ${guard.reason}`);
+  else if (guard && !guard.allowed) ctx.log.warn(`guards.prompt-guard BLOCKED a message in ${conversation}: ${guard.reason}`);
+
+  const grounding = explain.grounding;
+  if (grounding?.retried) {
+    const status = grounding.final.grounded ? "corrected by retry" : "still ungrounded after retry, stripped";
+    ctx.log.warn(`guards.grounding ${status} in ${conversation}: ${grounding.final.ungroundedUrls.join(", ")}`);
+  }
+
+  const leak = explain.leakDetector;
+  if (leak?.failedOpen) ctx.log.warn(`guards.leak-detector failed open in ${conversation}: ${leak.reason}`);
+  else if (leak?.isLeak) ctx.log.warn(`guards.leak-detector BLOCKED a leaked reply in ${conversation} (similarity=${leak.similarity}, via=${leak.via})`);
 }
 
 /** Send a reply (bounded to `replyLines` IRC lines) and record what was actually sent. */

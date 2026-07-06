@@ -1,14 +1,30 @@
 import type { LanguageModel, ToolSet } from "ai";
-import type { PromptSection } from "../prompt/sections.ts";
+import { assembleInstructions, type PromptSection } from "../prompt/sections.ts";
 import type { ContextEvent, Speaker, TurnContext } from "../context/events.ts";
 import { InMemoryContextLog, type ContextLog } from "../context/log.ts";
-import { recordDurableTranscripts, recordSubagentBriefings, runExchange, type ExchangeResult } from "../exchange.ts";
+import { recordDurableTranscripts, recordSubagentBriefings, type ExchangeResult } from "../exchange.ts";
 import { toReplyLines } from "../reply.ts";
 import { buildToolSet, defaultToolDefinitions, type ToolRegistryResult } from "../tools/index.ts";
-import { buildDefaultInstructions } from "../prompt/instructions.ts";
+import { buildDefaultSections } from "../prompt/instructions.ts";
 import { resolveSpeaker, type Friend } from "../identity/speakers.ts";
 import type { SpeakerFacts } from "../identity/middleware.ts";
-import type { ModelRoles } from "../models.ts";
+import { resolveEmbeddingModel, type ModelRoles } from "../models.ts";
+import { createLeakDetector, type LeakDetector } from "../guards/leak-detector.ts";
+import { runGuardedExchange, type GuardConfig, type GuardExplain } from "../guards/pipeline.ts";
+
+/**
+ * Unlike the live module (`mojo-ai.ts`), where every guard defaults to
+ * enabled, the bare harness defaults every guard OFF. Most harness/test usage
+ * is ad-hoc (a mock model, a specific scenario) and has no interest in an
+ * extra classifier+embedding round-trip on every exchange; forcing that on
+ * by default would break most existing `DebugHarness`-based tests, which
+ * don't inject a classifier/embedding mock. The CLI's OWN config-driven path
+ * (`cli/index.ts`) passes through the REAL parsed `guards` config (which
+ * defaults to all-on, same as the live module) explicitly, so `mojo-ai-debug`
+ * run against an actual config file still mirrors live behavior exactly —
+ * this default only affects programmatic/test construction.
+ */
+const NO_GUARDS: GuardConfig = { promptGuard: false, leakDetector: false, grounding: false };
 
 /**
  * `research_topic` (M6) needs its own model role, unlike every other default
@@ -80,6 +96,10 @@ export interface HarnessConfig {
   readonly now?: () => Date;
   /** Known people for identity resolution (see `identity/speakers.ts`). Defaults to none. */
   readonly friends?: readonly Friend[];
+  /** Which M7 guards run (see `guards/pipeline.ts`). Defaults to all OFF here — see `NO_GUARDS`'s doc comment for why this differs from the live module's all-on default. */
+  readonly guards?: GuardConfig;
+  /** Test-injection seam for the leak detector (mirrors `tools`) — bypasses building one from real per-section embeddings. Ignored when `guards.leakDetector` is false. */
+  readonly leakDetector?: LeakDetector;
 }
 
 export interface ChatOptions {
@@ -125,6 +145,10 @@ export interface ChatOutcome {
   readonly history: readonly ContextEvent[];
   /** The fully resolved speaker persisted for this turn's incoming line (trust tier + friend match). */
   readonly speaker: Speaker;
+  /** True when `guards.promptGuard` blocked this message before any exchange ran (see `result`, which is then absent). */
+  readonly blocked: boolean;
+  /** Every enabled guard's decision this turn (the `--explain` surface) — empty object when no guards ran. */
+  readonly explain: GuardExplain;
 }
 
 const DEFAULTS = { maxSteps: 8, replyLines: 3, historyLimit: 200, conversation: "debug" } as const;
@@ -137,6 +161,9 @@ export class DebugHarness {
   // per harness (config.models), so the registry can't be a single cache
   // shared across every DebugHarness the way it could before M6.
   #registry?: ToolRegistryResult;
+  // Lazy + per-instance for the same reason: built only if guards.leakDetector
+  // is actually enabled (most harness usage leaves guards off — see NO_GUARDS).
+  #leakDetector?: Promise<LeakDetector>;
 
   constructor(config: HarnessConfig) {
     this.#config = config;
@@ -149,6 +176,14 @@ export class DebugHarness {
       defaultToolDefinitions({ models: this.#config.models ?? defaultModelRoles(this.#config.model) }),
     );
     return this.#registry;
+  }
+
+  #defaultLeakDetector(sections: readonly PromptSection[]): Promise<LeakDetector> {
+    this.#leakDetector ??= createLeakDetector(
+      sections,
+      resolveEmbeddingModel((this.#config.models ?? defaultModelRoles(this.#config.model)).embedding),
+    );
+    return this.#leakDetector;
   }
 
   /** Append a synthetic event to the log (stage history before a `chat`). */
@@ -202,15 +237,22 @@ export class DebugHarness {
       this.#config.durableToolNames ?? (usingDefaultTools ? this.#defaultRegistry().durableNames : new Set<string>());
     const subagentToolNames =
       this.#config.subagentToolNames ?? (usingDefaultTools ? this.#defaultRegistry().subagentNames : new Set<string>());
+    const guards = this.#config.guards ?? NO_GUARDS;
+    const sections = buildDefaultSections(this.#config.friends, toolGuidance);
+    const instructions = this.#config.instructions ?? assembleInstructions(sections);
+    const models = this.#config.models ?? defaultModelRoles(this.#config.model);
+    const leakDetector = guards.leakDetector ? (this.#config.leakDetector ?? (await this.#defaultLeakDetector(sections))) : undefined;
 
-    let result: ExchangeResult;
+    let outcome: Awaited<ReturnType<typeof runGuardedExchange>>;
     try {
-      result = await runExchange(this.log, turn, {
-        model: this.#config.model,
-        instructions: this.#config.instructions ?? buildDefaultInstructions(this.#config.friends, toolGuidance),
-        tools,
-        maxSteps: this.#config.maxSteps ?? DEFAULTS.maxSteps,
-      });
+      outcome = await runGuardedExchange(
+        this.log,
+        turn,
+        { model: this.#config.model, instructions, tools, maxSteps: this.#config.maxSteps ?? DEFAULTS.maxSteps },
+        text,
+        guards,
+        { classifierModel: models.classifier, leakDetector },
+      );
     } catch (cause) {
       return {
         reply: "",
@@ -219,18 +261,31 @@ export class DebugHarness {
         error: toHarnessError(cause),
         history: this.log.events(),
         speaker,
+        blocked: false,
+        explain: {},
       };
     }
 
-    recordDurableTranscripts(this.log, result, durableToolNames, this.#now);
-    recordSubagentBriefings(this.log, result, subagentToolNames, this.#now);
+    if (outcome.result) {
+      recordDurableTranscripts(this.log, outcome.result, durableToolNames, this.#now);
+      recordSubagentBriefings(this.log, outcome.result, subagentToolNames, this.#now);
+    }
 
-    const lines = toReplyLines(result.text, replyLines);
+    const lines = toReplyLines(outcome.reply, replyLines);
     if (lines.length > 0) {
       this.log.append({ kind: "bot-reply", at: this.#now().toISOString(), text: lines.join("\n") });
     }
 
-    return { reply: lines.join("\n"), replyLines: lines, turn, result, history: this.log.events(), speaker };
+    return {
+      reply: lines.join("\n"),
+      replyLines: lines,
+      turn,
+      result: outcome.result,
+      history: this.log.events(),
+      speaker,
+      blocked: outcome.blocked,
+      explain: outcome.explain,
+    };
   }
 }
 

@@ -44,6 +44,10 @@ Options:
                           live module uses, so CLI and live never disagree
   --json                 emit machine-readable inspection
   --verbose              include rendered prompt, ephemera, and history
+  --explain              show each M7 guard's decision (prompt-guard,
+                          grounding, leak-detector) — guards themselves run
+                          per --config's [guards] table (default: all on);
+                          this flag only controls whether the CLI prints them
   -h, --help             show this help
 
 Deferred (recognized, wired in later milestones):
@@ -70,6 +74,7 @@ export async function main(argv: string[]): Promise<number> {
         friends: { type: "string" },
         json: { type: "boolean" },
         verbose: { type: "boolean" },
+        explain: { type: "boolean" },
         via: { type: "string" },
         db: { type: "string" },
         help: { type: "boolean", short: "h" },
@@ -133,6 +138,7 @@ export async function main(argv: string[]): Promise<number> {
         toolGuidance: registry.guidance,
         durableToolNames: registry.durableNames,
         subagentToolNames: registry.subagentNames,
+        guards: cliConfig.guards,
       });
       if (values.inject) {
         for (const event of await readInjectFile(values.inject)) harness.inject(event);
@@ -147,7 +153,7 @@ export async function main(argv: string[]): Promise<number> {
         `${
           values.json
             ? formatJson(outcome, { modelRoles })
-            : formatHuman(outcome, { verbose: values.verbose, modelRoles })
+            : formatHuman(outcome, { verbose: values.verbose, explain: values.explain, modelRoles })
         }\n`,
       );
       return outcome.error ? 1 : 0;
@@ -165,11 +171,13 @@ export async function main(argv: string[]): Promise<number> {
         toolGuidance: registry.guidance,
         durableToolNames: registry.durableNames,
         subagentToolNames: registry.subagentNames,
+        guards: cliConfig.guards,
         as: values.as,
         account: values.account,
         via: values.via,
         conversation: values.conversation,
         verbose: values.verbose,
+        explain: values.explain,
         modelRoles,
       });
       return 0;

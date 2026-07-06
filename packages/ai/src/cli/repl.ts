@@ -4,6 +4,7 @@ import type { ToolSet } from "ai";
 import type { Friend } from "../identity/speakers.ts";
 import type { ModelRoles } from "../models.ts";
 import type { PromptSection } from "../prompt/sections.ts";
+import type { GuardConfig } from "../guards/pipeline.ts";
 import { DebugHarness, parseContextEvents, type ChatOptions } from "./harness.ts";
 import { formatHuman, modelRoleLine, type ModelRoleStatus } from "./inspect.ts";
 
@@ -15,6 +16,8 @@ export interface ReplOptions extends ChatOptions {
   readonly replyLines?: number;
   readonly historyLimit?: number;
   readonly verbose?: boolean;
+  /** Show each M7 guard's decision after every reply — see `formatHuman`'s `explain` option. */
+  readonly explain?: boolean;
   /** Resolved once at startup by the CLI entry; shown in the banner and via `/models`. */
   readonly modelRoles?: ModelRoleStatus[];
   /** Known people for identity resolution, loaded once at startup (see `identity/speakers.ts`). */
@@ -24,6 +27,8 @@ export interface ReplOptions extends ChatOptions {
   readonly toolGuidance?: readonly PromptSection[];
   readonly durableToolNames?: ReadonlySet<string>;
   readonly subagentToolNames?: ReadonlySet<string>;
+  /** Which M7 guards run — see `HarnessConfig.guards`'s doc (off by default there; the CLI passes the real config-driven value here). */
+  readonly guards?: GuardConfig;
 }
 
 const HELP = `Commands:
@@ -97,7 +102,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
       totals.output += outcome.result.usage.outputTokens ?? 0;
       totals.total += outcome.result.usage.totalTokens ?? 0;
     }
-    stdout.write(`${formatHuman(outcome, { verbose: options.verbose })}\n\n`);
+    stdout.write(`${formatHuman(outcome, { verbose: options.verbose, explain: options.explain })}\n\n`);
     prompt();
   }
 
@@ -116,6 +121,7 @@ function newHarness(options: ReplOptions): DebugHarness {
     toolGuidance: options.toolGuidance,
     durableToolNames: options.durableToolNames,
     subagentToolNames: options.subagentToolNames,
+    guards: options.guards,
   });
 }
 

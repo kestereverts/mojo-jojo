@@ -50,6 +50,8 @@ describe("buildInspection", () => {
       error: { name: "APICallError", message: "rate limited", statusCode: 429 },
       history: [],
       speaker: { nick: "you", trust: "nick" },
+      blocked: false,
+      explain: {},
     };
     const i = buildInspection(errored);
     expect(i.error).toEqual({ name: "APICallError", message: "rate limited", statusCode: 429 });
@@ -118,5 +120,56 @@ describe("formatHuman", () => {
     expect(verbose).toContain("━━ PROMPT ━━");
     expect(verbose).toContain("━━ EPHEMERA ━━");
     expect(verbose).toContain("━━ HISTORY ━━");
+  });
+
+  test("no GUARDS section by default, even when guards ran — --explain (opts.explain) gates it", async () => {
+    const outcome: ChatOutcome = {
+      ...(await sampleOutcome()),
+      explain: {
+        promptGuard: { allowed: true, checkedByClassifier: false },
+        grounding: { retried: false, final: { grounded: true, ungroundedUrls: [] } },
+        leakDetector: { isLeak: false, similarity: 0.1 },
+      },
+    };
+    expect(formatHuman(outcome)).not.toContain("━━ GUARDS ━━");
+    const explained = formatHuman(outcome, { explain: true });
+    expect(explained).toContain("━━ GUARDS ━━");
+    expect(explained).toContain("prompt-guard: allow (prefilter — no classifier call)");
+    expect(explained).toContain("grounding: ok");
+    expect(explained).toContain("leak-detector: ok");
+  });
+
+  test("--explain with no guards having run shows nothing (empty explain, not blocked)", async () => {
+    const outcome = await sampleOutcome();
+    expect(formatHuman(outcome, { explain: true })).not.toContain("━━ GUARDS ━━");
+  });
+
+  test("--explain surfaces a block, a grounding strip, and a leak-detector hit distinctly", async () => {
+    const outcome: ChatOutcome = {
+      ...(await sampleOutcome()),
+      blocked: true,
+      explain: {
+        promptGuard: { allowed: false, checkedByClassifier: true, reason: "extraction attempt" },
+        grounding: { retried: true, final: { grounded: false, ungroundedUrls: ["https://mojo.v00l.com/:fake"] } },
+        leakDetector: { isLeak: true, similarity: 0.91, via: "embedding" },
+      },
+    };
+    const explained = formatHuman(outcome, { explain: true });
+    expect(explained).toContain("prompt-guard: BLOCK (classifier) — extraction attempt");
+    expect(explained).toContain("exchange skipped; a refusal was sent instead");
+    expect(explained).toContain("grounding: STRIPPED (after 1 retry) — https://mojo.v00l.com/:fake");
+    expect(explained).toContain("leak-detector: BLOCKED (via embedding, similarity=0.91)");
+  });
+
+  test("--explain surfaces a failedOpen guard distinctly from a genuine allow/block", async () => {
+    const outcome: ChatOutcome = {
+      ...(await sampleOutcome()),
+      explain: {
+        promptGuard: { allowed: true, checkedByClassifier: true, failedOpen: true, reason: "classifier errored" },
+      },
+    };
+    const explained = formatHuman(outcome, { explain: true });
+    expect(explained).toContain("[FAILED OPEN]");
+    expect(explained).toContain("classifier errored");
   });
 });

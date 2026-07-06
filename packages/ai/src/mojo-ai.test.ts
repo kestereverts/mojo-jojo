@@ -75,3 +75,33 @@ describe("mojoAiModule().parseConfig — other bounds unaffected by the models c
     expect(config).toMatchObject({ historyLimit: 50, maxSteps: 4, replyLines: 1 });
   });
 });
+
+describe("mojoAiModule().parseConfig — [guards] (M7)", () => {
+  test("every guard defaults to enabled", () => {
+    expect(parse({}).guards).toEqual({ promptGuard: true, leakDetector: true, grounding: true });
+  });
+
+  test("each guard can be independently disabled", () => {
+    const config = parse({ guards: { promptGuard: false } });
+    expect(config.guards).toEqual({ promptGuard: false, leakDetector: true, grounding: true });
+  });
+
+  test("all guards can be disabled together", () => {
+    const config = parse({ guards: { promptGuard: false, leakDetector: false, grounding: false } });
+    expect(config.guards).toEqual({ promptGuard: false, leakDetector: false, grounding: false });
+  });
+
+  test("rejects a non-boolean guard value, collecting the path in the error", () => {
+    try {
+      parse({ guards: { promptGuard: "yes" } });
+      throw new Error("expected parseConfig to throw");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(ConfigError);
+      expect((cause as ConfigError).issues.join()).toContain("modules.mojo-ai.guards.promptGuard");
+    }
+  });
+
+  test("rejects a non-table `guards` value", () => {
+    expect(() => parse({ guards: "not-a-table" })).toThrow(ConfigError);
+  });
+});

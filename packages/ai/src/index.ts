@@ -57,4 +57,4 @@ export {
 } from "./identity/speakers.ts";
 export { type PromptSection, assembleInstructions } from "./prompt/sections.ts";
 export { buildKnownUsersSection } from "./prompt/friends.ts";
-export { buildDefaultInstructions } from "./prompt/instructions.ts";
+export { buildDefaultInstructions, buildDefaultSections } from "./prompt/instructions.ts";
