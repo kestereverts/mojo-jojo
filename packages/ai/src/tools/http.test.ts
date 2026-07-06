@@ -57,3 +57,25 @@ describe("readCapped — streaming byte cap", () => {
     expect(await readCapped(res, 1000)).toBe("hello world");
   });
 });
+
+describe("readCapped — body-read timeout", () => {
+  test("a slow-drip response (well under the byte cap, but never finishing) times out rather than hanging forever", async () => {
+    // Regression: fetchLimited's own timeout only covers getting a Response
+    // back — it's cleared as soon as headers arrive, before the body is
+    // read. Without readCapped's OWN timeout, a server trickling a few bytes
+    // slower than the deadline could hold the read open indefinitely.
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        await new Promise((r) => setTimeout(r, 1000)); // slower than the 50ms deadline below
+        controller.enqueue(new Uint8Array(10));
+      },
+    });
+    const res = new Response(stream);
+    await expect(readCapped(res, 1_000_000, 50)).rejects.toThrow(/timed out/);
+  });
+
+  test("a response that finishes well within the timeout is unaffected", async () => {
+    const res = new Response("quick response");
+    expect(await readCapped(res, 1000, 5000)).toBe("quick response");
+  });
+});

@@ -142,4 +142,27 @@ describe("web_reader — request handling", () => {
     await execute({ url: "https://example.com/unique-8" }, {} as never);
     expect(fetchCount).toBe(1);
   });
+
+  test("connects to the RESOLVED IP address, not a fresh hostname re-resolution (the DNS-rebinding/TOCTOU fix)", async () => {
+    const captured: { url: string; hostHeader: string | null } = { url: "", hostHeader: null };
+    globalThis.fetch = (async (url: string, init?: RequestInit) => {
+      captured.url = url;
+      captured.hostHeader = new Headers(init?.headers).get("Host");
+      const res = new Response(ARTICLE_HTML, { status: 200, headers: { "content-type": "text/html" } });
+      Object.defineProperty(res, "url", { value: url });
+      return res;
+    }) as unknown as typeof fetch;
+
+    const result = (await execute({ url: "https://example.com/unique-11" }, {} as never)) as any;
+
+    // The actual fetch target's host is a resolved IP, not the hostname —
+    // proving the connection uses the SAME address `resolvePublicHttpUrl`
+    // validated, rather than fetch() re-resolving "example.com" itself.
+    const requestedHost = new URL(captured.url).hostname.replace(/^\[|\]$/g, "");
+    expect(requestedHost).not.toBe("example.com");
+    expect(captured.hostHeader).toBe("example.com");
+    // But the result reports the real, human-meaningful hostname-based URL.
+    expect(result.url).toBe("https://example.com/unique-11");
+    expect(result.domain).toBe("example.com");
+  });
 });

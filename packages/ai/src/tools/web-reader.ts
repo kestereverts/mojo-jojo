@@ -2,8 +2,9 @@ import { JSDOM, VirtualConsole } from "jsdom";
 import { Defuddle } from "defuddle/node";
 import { tool } from "ai";
 import { z } from "zod";
+import { isIP } from "node:net";
 import { fetchLimited, readCapped } from "./http.ts";
-import { assertPublicHttpUrl } from "./ssrf-guard.ts";
+import { resolvePublicHttpUrl } from "./ssrf-guard.ts";
 import { TtlCache } from "./cache.ts";
 import type { ToolDefinition } from "./define.ts";
 
@@ -242,26 +243,44 @@ interface GuardedResponse {
 /**
  * Fetches `url`, following redirects MANUALLY (not via `fetch`'s automatic
  * handling) so every hop — including the initial URL — can be checked by
- * `assertPublicHttpUrl` before being followed. A public URL that redirects
+ * `resolvePublicHttpUrl` before being followed. A public URL that redirects
  * to a private/internal address is exactly the SSRF bypass automatic
  * redirect-following would otherwise allow straight through.
+ *
+ * Connects to the VALIDATED literal address (`connectAddress`), not by
+ * re-resolving the hostname — `fetch()` doing its own independent DNS
+ * lookup at connect time would reopen the exact DNS-rebinding/TOCTOU gap
+ * `resolvePublicHttpUrl` closes (a hostname could resolve to a different,
+ * unvalidated address the second time). An explicit `Host` header preserves
+ * virtual-hosting AND — confirmed empirically against a real HTTPS site —
+ * Bun's fetch still validates the TLS certificate against it correctly even
+ * though the URL's own host is a literal IP.
  */
 async function fetchTextGuarded(url: string): Promise<GuardedResponse> {
   let current = url;
   for (let hop = 0; ; hop++) {
-    await assertPublicHttpUrl(current);
-    const res = await fetchLimited(current, { timeoutMs: FETCH_TIMEOUT_MS, redirect: "manual" });
+    const { url: validatedUrl, connectAddress } = await resolvePublicHttpUrl(current);
+    const connectUrl = new URL(validatedUrl);
+    connectUrl.hostname = isIP(connectAddress) === 6 ? `[${connectAddress}]` : connectAddress;
+
+    const res = await fetchLimited(connectUrl.toString(), {
+      timeoutMs: FETCH_TIMEOUT_MS,
+      redirect: "manual",
+      headers: { Host: validatedUrl.host },
+    });
 
     const location = res.status >= 300 && res.status < 400 ? res.headers.get("location") : null;
     if (location) {
       if (hop >= MAX_REDIRECTS) throw new Error(`too many redirects (>${MAX_REDIRECTS}) while fetching ${url}`);
-      current = new URL(location, current).toString();
+      current = new URL(location, validatedUrl).toString();
       continue;
     }
 
-    const text = await readCapped(res, MAX_RESPONSE_BYTES);
+    const text = await readCapped(res, MAX_RESPONSE_BYTES, FETCH_TIMEOUT_MS);
     const contentType = res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
-    return { status: res.status, ok: res.ok, text, url: res.url || current, contentType };
+    // NOT res.url — that reflects the literal-IP connect URL we actually
+    // requested. Report the real, human-meaningful hostname-based URL.
+    return { status: res.status, ok: res.ok, text, url: validatedUrl.toString(), contentType };
   }
 }
 

@@ -33,15 +33,28 @@ export async function fetchLimited(url: string, init: FetchLimits & RequestInit 
  * Read a response body as text, aborting as soon as the running byte count
  * exceeds `maxBytes` rather than buffering the whole body first — a hostile
  * or just very large response never gets fully materialized in memory.
+ *
+ * Also bounds WALL-CLOCK time for the read itself via `timeoutMs`: the
+ * initial `fetch()` call's own timeout (`fetchLimited`'s `timeoutMs`) only
+ * covers getting a `Response` back — it's cleared as soon as headers arrive,
+ * before the body is ever read. Without a read-phase timeout of its own, a
+ * server that returns a small `Content-Length` but "drips" bytes far below
+ * `maxBytes` could hold the reader open indefinitely.
  */
-export async function readCapped(res: Response, maxBytes: number): Promise<string> {
+export async function readCapped(res: Response, maxBytes: number, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<string> {
   const reader = res.body?.getReader();
   if (!reader) {
-    // No readable stream (e.g. an empty body) — nothing to cap.
+    // No readable stream (e.g. an empty body) — nothing to cap or time out.
     const buf = await res.arrayBuffer();
     if (buf.byteLength > maxBytes) throw new Error(`response too large (${buf.byteLength} bytes, max ${maxBytes})`);
     return new TextDecoder().decode(buf);
   }
+
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    void reader.cancel("read timed out").catch(() => {});
+  }, timeoutMs);
 
   const decoder = new TextDecoder();
   const chunks: string[] = [];
@@ -57,8 +70,14 @@ export async function readCapped(res: Response, maxBytes: number): Promise<strin
       chunks.push(decoder.decode(value, { stream: true }));
     }
   } finally {
+    clearTimeout(timer);
     void reader.cancel().catch(() => {});
   }
+  // A timed-out cancel() resolves the pending read() as `done: true`, which
+  // would otherwise look identical to the body genuinely ending — check the
+  // flag explicitly so a slow-drip response is reported as a timeout, not
+  // silently returned as if it were complete.
+  if (timedOut) throw new Error(`response body read timed out after ${timeoutMs}ms`);
   chunks.push(decoder.decode());
   return chunks.join("");
 }
@@ -66,7 +85,7 @@ export async function readCapped(res: Response, maxBytes: number): Promise<strin
 /** Fetch and parse JSON. Throws on a non-2xx status or an oversized body. */
 export async function fetchJson<T = unknown>(url: string, opts: FetchLimits & RequestInit = {}): Promise<T> {
   const res = await fetchLimited(url, opts);
-  const text = await readCapped(res, opts.maxBytes ?? DEFAULT_MAX_BYTES);
+  const text = await readCapped(res, opts.maxBytes ?? DEFAULT_MAX_BYTES, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
   return JSON.parse(text) as T;
 }
@@ -84,7 +103,7 @@ export async function fetchText(
   opts: FetchLimits & RequestInit = {},
 ): Promise<{ status: number; ok: boolean; text: string; url: string; contentType: string | undefined }> {
   const res = await fetchLimited(url, opts);
-  const text = await readCapped(res, opts.maxBytes ?? DEFAULT_MAX_BYTES);
+  const text = await readCapped(res, opts.maxBytes ?? DEFAULT_MAX_BYTES, opts.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   const contentType = res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
   return { status: res.status, ok: res.ok, text, url: res.url, contentType };
 }
