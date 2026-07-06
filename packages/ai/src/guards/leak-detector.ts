@@ -54,17 +54,38 @@ export async function createLeakDetector(
   embeddingModel: EmbeddingModel,
 ): Promise<LeakDetector> {
   const lines = distinctiveLines(sections);
-  const { embeddings: sectionEmbeddings } = await embedMany({
-    model: embeddingModel,
-    values: sections.map((s) => s.body),
-  });
+
+  // Setup itself must fail open too — an embedding-service outage at bot
+  // startup must not prevent the bot from starting at all (mojo-ai.ts awaits
+  // this), and must not make DebugHarness.chat() throw instead of returning
+  // a failed-open explain (review finding: the original version let a setup
+  // failure propagate as an uncaught rejection from createLeakDetector
+  // itself, well outside check()'s own try/catch). The substring check below
+  // needs no embedding model at all, so it still works even when setup fails.
+  let sectionEmbeddings: number[][] | undefined;
+  let setupError: string | undefined;
+  try {
+    const result = await embedMany({ model: embeddingModel, values: sections.map((s) => s.body) });
+    sectionEmbeddings = result.embeddings;
+  } catch (cause) {
+    setupError = cause instanceof Error ? cause.message : String(cause);
+  }
 
   return {
     async check(reply: string): Promise<LeakDetectionResult> {
-      if (reply.length < MIN_CHECK_LENGTH) return { isLeak: false, similarity: 0 };
-
+      // Runs regardless of reply length or embedding-setup success — cheap,
+      // no embedding call, and a short exact leak (e.g. a single ~60-char
+      // distinctive line) must not slip past just because it's under
+      // MIN_CHECK_LENGTH (review finding: the length gate previously ran
+      // BEFORE this check, silently exempting short verbatim leaks).
       const substringMatch = findSubstringLeak(reply, lines);
       if (substringMatch) return { isLeak: true, similarity: 1, via: "substring" };
+
+      if (reply.length < MIN_CHECK_LENGTH) return { isLeak: false, similarity: 0 };
+
+      if (!sectionEmbeddings) {
+        return { isLeak: false, similarity: 0, failedOpen: true, reason: `leak-detector setup failed: ${setupError}` };
+      }
 
       try {
         const { embedding: replyEmbedding } = await embed({ model: embeddingModel, value: reply });

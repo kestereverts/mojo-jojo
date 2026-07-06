@@ -19,7 +19,7 @@ import { runChatMiddleware, type ChatMessage, type ChatMiddleware } from "./iden
 import { createRelayMiddleware, parseRelays, type RelayDefinition } from "./identity/relay.ts";
 import { loadFriendsFile, resolveSpeaker, type Friend } from "./identity/speakers.ts";
 import { assembleInstructions } from "./prompt/sections.ts";
-import { buildDefaultSections } from "./prompt/instructions.ts";
+import { buildDefaultSections, leakDetectionSections } from "./prompt/instructions.ts";
 import { createLeakDetector, type LeakDetector } from "./guards/leak-detector.ts";
 import { runGuardedExchange, type GuardConfig, type GuardExplain } from "./guards/pipeline.ts";
 
@@ -149,7 +149,7 @@ export function mojoAiModule(): Module<MojoAiConfig> {
       const sections = buildDefaultSections(friends, guidance);
       const instructions = assembleInstructions(sections);
       const leakDetector: LeakDetector | undefined = ctx.config.guards.leakDetector
-        ? await createLeakDetector(sections, resolveEmbeddingModel(ctx.config.models.embedding))
+        ? await createLeakDetector(leakDetectionSections(sections), resolveEmbeddingModel(ctx.config.models.embedding))
         : undefined;
 
       const middlewareChain: ChatMiddleware[] = [

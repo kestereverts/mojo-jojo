@@ -5,7 +5,7 @@ import { InMemoryContextLog, type ContextLog } from "../context/log.ts";
 import { recordDurableTranscripts, recordSubagentBriefings, type ExchangeResult } from "../exchange.ts";
 import { toReplyLines } from "../reply.ts";
 import { buildToolSet, defaultToolDefinitions, type ToolRegistryResult } from "../tools/index.ts";
-import { buildDefaultSections } from "../prompt/instructions.ts";
+import { buildDefaultSections, leakDetectionSections } from "../prompt/instructions.ts";
 import { resolveSpeaker, type Friend } from "../identity/speakers.ts";
 import type { SpeakerFacts } from "../identity/middleware.ts";
 import { resolveEmbeddingModel, type ModelRoles } from "../models.ts";
@@ -180,7 +180,7 @@ export class DebugHarness {
 
   #defaultLeakDetector(sections: readonly PromptSection[]): Promise<LeakDetector> {
     this.#leakDetector ??= createLeakDetector(
-      sections,
+      leakDetectionSections(sections),
       resolveEmbeddingModel((this.#config.models ?? defaultModelRoles(this.#config.model)).embedding),
     );
     return this.#leakDetector;

@@ -49,3 +49,30 @@ export function buildDefaultInstructions(
 ): string {
   return assembleInstructions(buildDefaultSections(friends, toolGuidance));
 }
+
+/**
+ * Sections genuinely worth leak-checking: internal OPERATIONAL rules/
+ * contracts and any real known-user data. Deliberately EXCLUDES persona lore,
+ * canned special-response triggers, and few-shot examples — the bot is
+ * explicitly INSTRUCTED to reproduce that content on request (a self-intro
+ * echoes PERSONA, a "tell me a joke"-style trigger echoes SPECIAL_RESPONSES
+ * verbatim, an on-topic question can echo an EXAMPLES answer almost
+ * word-for-word), and tool guidance ("call when the user asks about
+ * weather...") is discoverable/topical, not secret. Checking the leak
+ * detector against those sections makes the bot's own designed behavior
+ * indistinguishable from an actual leak — a normal self-introduction or
+ * canned-response trigger would score as high on PERSONA/SPECIAL_RESPONSES as
+ * a real extraction attempt would (M7 review finding, Ophelia). Filtered from
+ * the SAME section list `buildDefaultSections` returns (by stable `id`), not
+ * a second reconstruction of "which sections exist."
+ */
+const LEAK_CHECKED_SECTION_IDS: ReadonlySet<string> = new Set([
+  "behavior",
+  "message-format",
+  "anti-impersonation",
+  "known-users",
+]);
+
+export function leakDetectionSections(sections: readonly PromptSection[]): PromptSection[] {
+  return sections.filter((s) => LEAK_CHECKED_SECTION_IDS.has(s.id));
+}

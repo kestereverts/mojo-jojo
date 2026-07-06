@@ -82,14 +82,20 @@ export async function runGuardedExchange(
   let reply = result.text;
 
   if (config.grounding) {
-    let check = checkGrounding(reply, result.steps);
+    // The log at this point reflects only PRIOR turns — this exchange's own
+    // tool-transcript is recorded by the OUTER caller only after this whole
+    // guard pipeline returns, so `priorEvents` can never double-count (or
+    // omit) the current exchange's own paste calls, which `result.steps`
+    // already covers.
+    const priorEvents = log.events();
+    let check = checkGrounding(reply, result.steps, priorEvents);
     let retried = false;
     if (!check.grounded) {
       retried = true;
       const retryTurn: TurnContext = { ...turn, guidance: [...turn.guidance, groundingRetryGuidance(check.ungroundedUrls)] };
       result = await runExchange(log, retryTurn, exchangeOptions);
       reply = result.text;
-      check = checkGrounding(reply, result.steps);
+      check = checkGrounding(reply, result.steps, priorEvents);
       if (!check.grounded) reply = stripUngroundedUrls(reply, check.ungroundedUrls);
     }
     explain.grounding = { retried, final: check };

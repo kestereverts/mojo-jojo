@@ -1,4 +1,5 @@
 import type { ExchangeStep } from "../exchange.ts";
+import type { ContextEvent } from "../context/events.ts";
 
 // Same env var / default as tools/paste.ts — the portal host this bot's own
 // paste tool uploads to. Deliberately narrow: this guard only cares about
@@ -10,24 +11,44 @@ const PORTAL_BASE_URL = process.env.MOJO_PORTAL_BASE_URL ?? "https://mojo.v00l.c
 
 export interface GroundingResult {
   readonly grounded: boolean;
-  /** Portal URLs the reply mentions that don't appear in any successful `paste` call's output this exchange — i.e. likely fabricated rather than copied from a real tool result. */
+  /** Portal URLs the reply mentions that don't appear in any successful `paste` call's output this exchange, or a prior `paste` durable transcript — i.e. likely fabricated rather than copied from a real tool result. */
   readonly ungroundedUrls: readonly string[];
 }
 
+// Trailing punctuation a sentence naturally puts right after a URL — none of
+// these are valid trailing characters for a real portal paste URL, so
+// stripping them avoids treating "...:abc123." (a period ending the
+// sentence) as part of the URL. Without this, the extremely common "Here's
+// your paste: <url>." reply shape would extract the URL WITH the trailing
+// period, fail to match the paste tool's own (period-free) output, and get
+// wrongly treated as ungrounded — stripping a legitimate link and wasting a
+// retry on a reply that was already correct.
+const TRAILING_PUNCTUATION = /[.,;:!?)\]'"]+$/;
+
 function extractUrls(text: string): string[] {
-  return text.match(/https?:\/\/[^\s)>\]"']+/g) ?? [];
+  const matches = text.match(/https?:\/\/[^\s)>\]"']+/g) ?? [];
+  return matches.map((url) => url.replace(TRAILING_PUNCTUATION, ""));
+}
+
+// DNS treats "mojo.v00l.com" and "mojo.v00l.com." (a root-anchored FQDN) as
+// the exact same host — a trailing-dot URL is just as clickable/resolvable
+// in a real client. Without stripping it, `new URL(url).host` differs by a
+// single trailing "." and a trailing-dot variant of a fabricated URL would
+// silently skip this guard entirely instead of being checked and stripped.
+function normalizeHost(host: string): string {
+  return host.endsWith(".") ? host.slice(0, -1) : host;
 }
 
 function portalHost(): string | undefined {
   try {
-    return new URL(PORTAL_BASE_URL).host;
+    return normalizeHost(new URL(PORTAL_BASE_URL).host);
   } catch {
     return undefined;
   }
 }
 
 /** Every URL a successful `paste` call actually returned this exchange — the ground truth a reply's portal URLs must match. */
-function knownPasteUrls(steps: readonly ExchangeStep[]): Set<string> {
+function knownPasteUrlsFromSteps(steps: readonly ExchangeStep[]): Set<string> {
   const urls = new Set<string>();
   for (const step of steps) {
     for (const call of step.toolCalls) {
@@ -40,28 +61,55 @@ function knownPasteUrls(steps: readonly ExchangeStep[]): Set<string> {
 }
 
 /**
+ * `paste` is `durableTranscript: true` — the model can legitimately re-cite a
+ * paste it created in an EARLIER turn ("what was that link again?"), and that
+ * prior URL lives only in the durable log, not in this exchange's own
+ * `steps`. Without checking it too, a genuine re-citation of a real, older
+ * paste would be flagged ungrounded and stripped (M7 review finding,
+ * Ophelia) — `priorEvents` should be the log's history from BEFORE this
+ * exchange ran (the caller passes `log.events()` at the point it calls this,
+ * which — since the current exchange's own transcript is recorded by the
+ * OUTER caller only after the guard pipeline returns — naturally contains
+ * only prior turns, never double-counting the current exchange's own call).
+ */
+function knownPasteUrlsFromHistory(priorEvents: readonly ContextEvent[]): Set<string> {
+  const urls = new Set<string>();
+  for (const event of priorEvents) {
+    if (event.kind !== "tool-transcript" || event.tool !== "paste") continue;
+    const output = event.output as { url?: unknown } | undefined;
+    if (typeof output?.url === "string") urls.add(output.url);
+  }
+  return urls;
+}
+
+/**
  * Deterministic replacement for mojo-ai3's LLM-based verifier (which made an
  * extra model round-trip just to check/"correct" a URL — slow, costly, and
  * non-deterministic: an LLM told to "not change anything else" can still
  * subtly rephrase the message). This just checks: does every portal URL the
  * reply mentions actually appear in this exchange's own successful `paste`
- * tool outputs? A URL the model invented (plausible-looking but never
- * actually returned by a real `paste` call) fails.
+ * tool outputs, or a prior turn's durable `paste` transcript? A URL the model
+ * invented (plausible-looking but never actually returned by a real `paste`
+ * call, past or present) fails.
  */
-export function checkGrounding(reply: string, steps: readonly ExchangeStep[]): GroundingResult {
+export function checkGrounding(
+  reply: string,
+  steps: readonly ExchangeStep[],
+  priorEvents: readonly ContextEvent[] = [],
+): GroundingResult {
   const host = portalHost();
   if (!host) return { grounded: true, ungroundedUrls: [] };
 
   const mentionedPortalUrls = extractUrls(reply).filter((url) => {
     try {
-      return new URL(url).host === host;
+      return normalizeHost(new URL(url).host) === host;
     } catch {
       return false;
     }
   });
   if (mentionedPortalUrls.length === 0) return { grounded: true, ungroundedUrls: [] };
 
-  const known = knownPasteUrls(steps);
+  const known = new Set([...knownPasteUrlsFromSteps(steps), ...knownPasteUrlsFromHistory(priorEvents)]);
   const ungroundedUrls = [...new Set(mentionedPortalUrls.filter((url) => !known.has(url)))];
   return { grounded: ungroundedUrls.length === 0, ungroundedUrls };
 }
