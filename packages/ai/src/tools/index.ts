@@ -2,9 +2,14 @@ import type { ToolSet } from "ai";
 import type { PromptSection } from "../prompt/sections.ts";
 import type { ToolDefinition } from "./define.ts";
 import { currencyConvertTool } from "./currency.ts";
+import { getPasteTool } from "./get-paste.ts";
 import { letterCountTool } from "./letter-count.ts";
 import { localTimeTool } from "./local-time.ts";
+import { pasteTool } from "./paste.ts";
+import { placesSearchTool } from "./places-search.ts";
 import { weatherForecastTool } from "./weather.ts";
+import { webReaderTool } from "./web-reader.ts";
+import { webSearchTool } from "./web-search.ts";
 import { wolframAlphaTool } from "./wolfram.ts";
 
 /** One enabled tool's own metadata, kept alongside the folded views below for callers (like `mojo-ai-debug tools`) that need a direct name→guidance link rather than reconstructing it from parallel arrays. */
@@ -49,10 +54,20 @@ export function buildToolSet(defs: readonly ToolDefinition[], disabled: readonly
 }
 
 /**
- * The built-in tools, in a fixed, deterministic order. `research_topic`
- * (a subagent, M6), `web_search`/`web_reader`/`paste`/`get_paste`/`places_search`
- * (M5) aren't here yet.
+ * The built-in tools, in a fixed, deterministic order. `research_topic` (a
+ * subagent) lands in M6.
  */
 export function defaultToolDefinitions(): ToolDefinition[] {
-  return [letterCountTool(), localTimeTool(), currencyConvertTool(), weatherForecastTool(), wolframAlphaTool()];
+  return [
+    letterCountTool(),
+    localTimeTool(),
+    currencyConvertTool(),
+    weatherForecastTool(),
+    wolframAlphaTool(),
+    webSearchTool(),
+    webReaderTool(),
+    pasteTool(),
+    getPasteTool(),
+    placesSearchTool(),
+  ];
 }

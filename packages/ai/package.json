@@ -27,7 +27,12 @@
     "@mojo-jojo/bot": "workspace:*",
     "@mojo-jojo/irc-client": "workspace:*",
     "ai": "^7",
+    "defuddle": "^0.19.1",
+    "jsdom": "^29.1.1",
     "rxjs": "^7.8.0",
     "zod": "^4"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^28.0.3"
   }
 }

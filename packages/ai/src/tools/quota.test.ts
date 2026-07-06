@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { DailyQuota } from "./quota.ts";
+import { DailyQuota, TokenBucket } from "./quota.ts";
 
 describe("DailyQuota", () => {
   test("allows up to the limit, then rejects, all within the same day", () => {
@@ -33,5 +33,36 @@ describe("DailyQuota", () => {
     expect(() => new DailyQuota(0)).toThrow(RangeError);
     expect(() => new DailyQuota(-1)).toThrow(RangeError);
     expect(() => new DailyQuota(1.5)).toThrow(RangeError);
+  });
+});
+
+describe("TokenBucket", () => {
+  test("allows up to capacity as a burst, then rejects until refill", () => {
+    const b = new TokenBucket(3, 1000);
+    let t = 0;
+    expect(b.tryConsume(t)).toBe(true);
+    expect(b.tryConsume(t)).toBe(true);
+    expect(b.tryConsume(t)).toBe(true);
+    expect(b.tryConsume(t)).toBe(false);
+  });
+
+  test("refills one token per interval, capped at capacity", () => {
+    const b = new TokenBucket(2, 1000);
+    expect(b.tryConsume(0)).toBe(true);
+    expect(b.tryConsume(0)).toBe(true);
+    expect(b.tryConsume(0)).toBe(false); // empty
+    expect(b.tryConsume(999)).toBe(false); // not yet refilled
+    expect(b.tryConsume(1000)).toBe(true); // one interval elapsed -> 1 token
+    expect(b.tryConsume(1000)).toBe(false); // spent it
+    expect(b.tryConsume(5000)).toBe(true); // multiple intervals elapsed, capped at capacity (2), not unbounded
+    expect(b.tryConsume(5000)).toBe(true);
+    expect(b.tryConsume(5000)).toBe(false);
+  });
+
+  test("rejects a non-positive/non-integer capacity or non-positive interval", () => {
+    expect(() => new TokenBucket(0, 1000)).toThrow(RangeError);
+    expect(() => new TokenBucket(1.5, 1000)).toThrow(RangeError);
+    expect(() => new TokenBucket(3, 0)).toThrow(RangeError);
+    expect(() => new TokenBucket(3, -1)).toThrow(RangeError);
   });
 });

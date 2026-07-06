@@ -85,13 +85,26 @@ describe("main — usage & validation exit codes (no network)", () => {
 });
 
 describe("main — tools command (network-free registry inspection)", () => {
-  test("lists every default tool with its guidance, none marked [durable] in M4's batch", async () => {
+  test("lists every default tool with its guidance, and marks only paste/get_paste [durable]", async () => {
     const r = await run(["tools"]);
     expect(r.code).toBe(0);
-    for (const name of ["letter_count", "local_time", "currency_convert", "weather_forecast", "wolfram_alpha"]) {
+    for (const name of [
+      "letter_count",
+      "local_time",
+      "currency_convert",
+      "weather_forecast",
+      "wolfram_alpha",
+      "web_search",
+      "web_reader",
+      "paste",
+      "get_paste",
+      "places_search",
+    ]) {
       expect(r.out).toContain(name);
     }
-    expect(r.out).not.toContain("[durable]");
+    expect(r.out).toContain("paste [durable]");
+    expect(r.out).toContain("get_paste [durable]");
+    expect(r.out).not.toContain("letter_count [durable]");
   });
 
   test("--config's tools.disabled actually removes a tool from the listing — the CLI/live parity this milestone exists for", async () => {

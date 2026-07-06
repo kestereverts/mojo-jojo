@@ -44,13 +44,16 @@ export async function fetchJson<T = unknown>(url: string, opts: FetchLimits & Re
  * Fetch raw text WITHOUT throwing on a non-2xx status — for APIs (like
  * Wolfram Alpha's LLM endpoint) where a "failure" status is itself a
  * meaningful response the caller needs to inspect, not just an error to
- * propagate. Still throws on an oversized body.
+ * propagate. Still throws on an oversized body. `url`/`contentType` reflect
+ * the response actually received (post-redirect final URL; the media type
+ * with any `; charset=...` stripped) for callers that need to dispatch on them.
  */
 export async function fetchText(
   url: string,
   opts: FetchLimits & RequestInit = {},
-): Promise<{ status: number; ok: boolean; text: string }> {
+): Promise<{ status: number; ok: boolean; text: string; url: string; contentType: string | undefined }> {
   const res = await fetchLimited(url, opts);
   const text = await readCapped(res, opts.maxBytes ?? DEFAULT_MAX_BYTES);
-  return { status: res.status, ok: res.ok, text };
+  const contentType = res.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase();
+  return { status: res.status, ok: res.ok, text, url: res.url, contentType };
 }

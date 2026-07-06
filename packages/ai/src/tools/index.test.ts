@@ -58,18 +58,23 @@ describe("buildToolSet", () => {
 });
 
 describe("defaultToolDefinitions", () => {
-  test("returns exactly M4's five tools, all non-durable, all with guidance", () => {
+  test("returns every built-in tool, all with guidance, and only paste/get_paste flagged durable", () => {
     const defs = defaultToolDefinitions();
     expect(defs.map((d) => d.name).sort()).toEqual([
       "currency_convert",
+      "get_paste",
       "letter_count",
       "local_time",
+      "paste",
+      "places_search",
       "weather_forecast",
+      "web_reader",
+      "web_search",
       "wolfram_alpha",
     ]);
     for (const def of defs) {
-      expect(def.durableTranscript).toBe(false);
       expect(def.guidance).toBeDefined();
+      expect(def.durableTranscript).toBe(["paste", "get_paste"].includes(def.name));
     }
   });
 });

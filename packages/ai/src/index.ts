@@ -26,12 +26,17 @@ export { buildToolSet, defaultToolDefinitions, type ToolRegistryResult } from ".
 export type { ToolDefinition } from "./tools/define.ts";
 export { fetchJson, fetchText, type FetchLimits } from "./tools/http.ts";
 export { TtlCache } from "./tools/cache.ts";
-export { DailyQuota } from "./tools/quota.ts";
+export { DailyQuota, TokenBucket } from "./tools/quota.ts";
 export { letterCountTool } from "./tools/letter-count.ts";
 export { localTimeTool } from "./tools/local-time.ts";
 export { currencyConvertTool } from "./tools/currency.ts";
 export { weatherForecastTool } from "./tools/weather.ts";
 export { wolframAlphaTool } from "./tools/wolfram.ts";
+export { webSearchTool } from "./tools/web-search.ts";
+export { webReaderTool } from "./tools/web-reader.ts";
+export { pasteTool } from "./tools/paste.ts";
+export { getPasteTool } from "./tools/get-paste.ts";
+export { placesSearchTool } from "./tools/places-search.ts";
 export {
   runChatMiddleware,
   type ChatMessage,
