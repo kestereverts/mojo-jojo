@@ -69,12 +69,16 @@ describe("renderPrompt", () => {
     expect(messages[1]?.content).toBe('[tool weather] input={"location":"Tokyo"} output={"tempC":20}');
   });
 
-  test("a subagent briefing is omitted entirely (rendered starting M6)", () => {
+  test("a subagent briefing renders as a compact assistant block, flushing pending chat lines first", () => {
     const messages = renderPrompt(
-      [chat("alice", "hi"), { kind: "subagent-briefing", at: "2026-07-03T11:59:15.000Z", agent: "research", briefing: { summary: "x" } }],
+      [
+        chat("alice", "mojo: research bun"),
+        { kind: "subagent-briefing", at: "2026-07-03T11:59:15.000Z", agent: "research_topic", briefing: { summary: "x" } },
+        chat("bob", "nice"),
+      ],
       turn,
     );
-    // one coalesced chat message + the ephemeral tail — nothing for the briefing.
-    expect(messages).toHaveLength(2);
+    expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "user", "user"]);
+    expect(messages[1]?.content).toBe('[research_topic briefing] {"summary":"x"}');
   });
 });

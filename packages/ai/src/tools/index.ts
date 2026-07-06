@@ -1,6 +1,8 @@
 import type { ToolSet } from "ai";
 import type { PromptSection } from "../prompt/sections.ts";
 import type { ToolDefinition } from "./define.ts";
+import type { RunSubagentDeps } from "../subagents/define.ts";
+import { researchTopicTool } from "../subagents/research.ts";
 import { currencyConvertTool } from "./currency.ts";
 import { getPasteTool } from "./get-paste.ts";
 import { letterCountTool } from "./letter-count.ts";
@@ -17,6 +19,7 @@ export interface ToolRegistryEntry {
   readonly name: string;
   readonly guidance?: PromptSection;
   readonly durableTranscript: boolean;
+  readonly isSubagent: boolean;
 }
 
 export interface ToolRegistryResult {
@@ -25,6 +28,8 @@ export interface ToolRegistryResult {
   readonly guidance: readonly PromptSection[];
   /** Names of enabled tools whose successful calls should be persisted as durable transcripts. */
   readonly durableNames: ReadonlySet<string>;
+  /** Names of enabled tools backed by a subagent — their successful calls are recorded via `recordSubagentBriefings`, not `recordDurableTranscripts`. */
+  readonly subagentNames: ReadonlySet<string>;
   /** Every enabled tool's own metadata, in registry order. */
   readonly entries: readonly ToolRegistryEntry[];
 }
@@ -40,6 +45,7 @@ export function buildToolSet(defs: readonly ToolDefinition[], disabled: readonly
   const tools: Record<string, ToolSet[string]> = {};
   const guidance: PromptSection[] = [];
   const durableNames = new Set<string>();
+  const subagentNames = new Set<string>();
   const entries: ToolRegistryEntry[] = [];
 
   for (const def of defs) {
@@ -47,17 +53,20 @@ export function buildToolSet(defs: readonly ToolDefinition[], disabled: readonly
     tools[def.name] = def.tool;
     if (def.guidance) guidance.push(def.guidance);
     if (def.durableTranscript) durableNames.add(def.name);
-    entries.push({ name: def.name, guidance: def.guidance, durableTranscript: def.durableTranscript });
+    if (def.isSubagent) subagentNames.add(def.name);
+    entries.push({ name: def.name, guidance: def.guidance, durableTranscript: def.durableTranscript, isSubagent: def.isSubagent ?? false });
   }
 
-  return { tools, guidance, durableNames, entries };
+  return { tools, guidance, durableNames, subagentNames, entries };
 }
 
 /**
  * The built-in tools, in a fixed, deterministic order. `research_topic` (a
- * subagent) lands in M6.
+ * subagent) needs `deps` (its own model role) that the other, dependency-free
+ * tools don't — so unlike them it isn't self-contained, and this function
+ * isn't either as of M6.
  */
-export function defaultToolDefinitions(): ToolDefinition[] {
+export function defaultToolDefinitions(deps: RunSubagentDeps): ToolDefinition[] {
   return [
     letterCountTool(),
     localTimeTool(),
@@ -69,5 +78,6 @@ export function defaultToolDefinitions(): ToolDefinition[] {
     pasteTool(),
     getPasteTool(),
     placesSearchTool(),
+    researchTopicTool(deps),
   ];
 }

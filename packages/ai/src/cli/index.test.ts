@@ -85,7 +85,7 @@ describe("main — usage & validation exit codes (no network)", () => {
 });
 
 describe("main — tools command (network-free registry inspection)", () => {
-  test("lists every default tool with its guidance, and marks only paste/get_paste [durable]", async () => {
+  test("lists every default tool with its guidance, and marks only paste/get_paste [durable], only research_topic [subagent]", async () => {
     const r = await run(["tools"]);
     expect(r.code).toBe(0);
     for (const name of [
@@ -99,12 +99,15 @@ describe("main — tools command (network-free registry inspection)", () => {
       "paste",
       "get_paste",
       "places_search",
+      "research_topic",
     ]) {
       expect(r.out).toContain(name);
     }
     expect(r.out).toContain("paste [durable]");
     expect(r.out).toContain("get_paste [durable]");
     expect(r.out).not.toContain("letter_count [durable]");
+    expect(r.out).toContain("research_topic [subagent]");
+    expect(r.out).not.toContain("letter_count [subagent]");
   });
 
   test("--config's tools.disabled actually removes a tool from the listing — the CLI/live parity this milestone exists for", async () => {
@@ -123,6 +126,18 @@ describe("main — tools command (network-free registry inspection)", () => {
     expect(names).toContain("wolfram_alpha");
     const wolfram = parsed.tools.find((t: { name: string }) => t.name === "wolfram_alpha");
     expect(wolfram.durableTranscript).toBe(false);
+    expect(wolfram.isSubagent).toBe(false);
     expect(typeof wolfram.guidance).toBe("string");
+    const research = parsed.tools.find((t: { name: string }) => t.name === "research_topic");
+    expect(research.isSubagent).toBe(true);
+    expect(research.durableTranscript).toBe(false);
+  });
+});
+
+describe("main — research command (network-dependent, real subagent)", () => {
+  test("a missing topic exits 2 with usage", async () => {
+    const r = await run(["research"]);
+    expect(r.code).toBe(2);
+    expect(r.err).toContain("research needs a topic");
   });
 });

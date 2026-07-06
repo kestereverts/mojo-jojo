@@ -6,6 +6,8 @@ import { ConfigError } from "@mojo-jojo/bot";
 import { mojoAiModule } from "../mojo-ai.ts";
 import { loadFriendsFile, type Friend } from "../identity/speakers.ts";
 import { buildToolSet, defaultToolDefinitions } from "../tools/index.ts";
+import { runSubagent } from "../subagents/define.ts";
+import { researchSubagent } from "../subagents/research.ts";
 import { DebugHarness, parseContextEvents } from "./harness.ts";
 import { describeModelRoles, formatHuman, formatJson } from "./inspect.ts";
 import { runRepl } from "./repl.ts";
@@ -17,6 +19,11 @@ Usage:
   mojo-ai-debug repl [options]
   mojo-ai-debug tools [--config <file>] [--json]   list the enabled tool
                                                     registry + guidance
+  mojo-ai-debug research "<topic>" [--objective <text>] [--config <file>] [--json]
+                                                    run the research subagent
+                                                    standalone (no chat loop)
+                                                    and dump its briefing +
+                                                    timing
 
 Options:
   --as <name>            speaker identity: a nick, or (with --via) the
@@ -28,6 +35,8 @@ Options:
                           --config's friendsFile, if either is set)
   --conversation <id>    conversation label (default "debug")
   --model <spec>         provider/model-id — overrides the "chat" role (see --config)
+  --objective <text>     research subcommand only — what kind of answer to
+                          bring back (recent news, a comparison, etc.)
   --max-steps <n>        tool-loop iteration cap
   --inject <file>        JSON file of event(s) to stage before the message
   --config <file>        read [modules.mojo-ai] through the SAME parseConfig the
@@ -53,6 +62,7 @@ export async function main(argv: string[]): Promise<number> {
         account: { type: "string" },
         conversation: { type: "string" },
         model: { type: "string" },
+        objective: { type: "string" },
         "max-steps": { type: "string" },
         inject: { type: "string" },
         config: { type: "string" },
@@ -104,7 +114,10 @@ export async function main(argv: string[]): Promise<number> {
     // Built explicitly (rather than relying on the harness's own all-tools
     // default) so a config's `tools.disabled` list is actually honored here —
     // the same list the live module reads via the same parseConfig.
-    const registry = buildToolSet(defaultToolDefinitions(), cliConfig.toolsDisabled);
+    // cliConfig.models (NOT the --model-overridden `model` above) — --model
+    // is documented as overriding only the "chat" role for this invocation,
+    // not research_topic's "research" role.
+    const registry = buildToolSet(defaultToolDefinitions({ models: cliConfig.models }), cliConfig.toolsDisabled);
 
     if (command === "chat") {
       const message = rest.join(" ").trim();
@@ -121,6 +134,7 @@ export async function main(argv: string[]): Promise<number> {
         tools: registry.tools,
         toolGuidance: registry.guidance,
         durableToolNames: registry.durableNames,
+        subagentToolNames: registry.subagentNames,
       });
       if (values.inject) {
         for (const event of await readInjectFile(values.inject)) harness.inject(event);
@@ -151,6 +165,7 @@ export async function main(argv: string[]): Promise<number> {
         tools: registry.tools,
         toolGuidance: registry.guidance,
         durableToolNames: registry.durableNames,
+        subagentToolNames: registry.subagentNames,
         as: values.as,
         account: values.account,
         via: values.via,
@@ -174,6 +189,29 @@ export async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
+    if (command === "research") {
+      const topic = rest.join(" ").trim();
+      if (!topic) {
+        stderr.write(`research needs a topic.\n\n${USAGE}\n`);
+        return 2;
+      }
+      const startedAt = performance.now();
+      try {
+        const briefing = await runSubagent(
+          researchSubagent(),
+          { topic, objective: values.objective },
+          { models: cliConfig.models },
+        );
+        const wallMs = Math.round(performance.now() - startedAt);
+        stdout.write(`${values.json ? JSON.stringify({ briefing, wallMs }, null, 2) : formatResearchHuman(briefing, wallMs)}\n`);
+        return 0;
+      } catch (cause) {
+        const message = cause instanceof Error ? cause.message : String(cause);
+        stderr.write(`research_topic failed: ${message}\n`);
+        return 1;
+      }
+    }
+
     stderr.write(`unknown command: ${command}\n\n${USAGE}\n`);
     return 2;
   } catch (cause) {
@@ -190,7 +228,8 @@ function formatToolsHuman(registry: ReturnType<typeof buildToolSet>): string {
   return registry.entries
     .map((entry) => {
       const durable = entry.durableTranscript ? " [durable]" : "";
-      return `${entry.name}${durable}\n${entry.guidance ? `  ${entry.guidance.body}` : "  (no guidance)"}`;
+      const subagent = entry.isSubagent ? " [subagent]" : "";
+      return `${entry.name}${durable}${subagent}\n${entry.guidance ? `  ${entry.guidance.body}` : "  (no guidance)"}`;
     })
     .join("\n\n");
 }
@@ -199,9 +238,34 @@ function formatToolsJson(registry: ReturnType<typeof buildToolSet>): string {
   const tools = registry.entries.map((entry) => ({
     name: entry.name,
     durableTranscript: entry.durableTranscript,
+    isSubagent: entry.isSubagent,
     guidance: entry.guidance?.body ?? null,
   }));
   return JSON.stringify({ tools }, null, 2);
+}
+
+function formatResearchHuman(briefing: Awaited<ReturnType<typeof runSubagent>>, wallMs: number): string {
+  const b = briefing as {
+    summary: string;
+    findings: readonly { claim: string; sourceUrls: readonly string[] }[];
+    sources: readonly { title: string; url: string }[];
+    confidence: string;
+    incomplete: boolean;
+  };
+  const findings = b.findings.map((f) => `  - ${f.claim}${f.sourceUrls.length ? ` (${f.sourceUrls.join(", ")})` : ""}`).join("\n");
+  const sources = b.sources.map((s) => `  - ${s.title}: ${s.url}`).join("\n");
+  return [
+    `━━ SUMMARY ━━`,
+    b.summary,
+    ``,
+    `━━ FINDINGS ━━`,
+    findings || "  (none)",
+    ``,
+    `━━ SOURCES ━━`,
+    sources || "  (none)",
+    ``,
+    `confidence=${b.confidence} incomplete=${b.incomplete} wall=${wallMs}ms`,
+  ].join("\n");
 }
 
 /** A user-input error (bad flag, unreadable/invalid config or inject file) → exit 2. */

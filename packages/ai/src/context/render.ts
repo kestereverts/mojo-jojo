@@ -1,5 +1,5 @@
 import type { ModelMessage } from "ai";
-import type { ChatMessageEvent, ContextEvent, ToolTranscriptEvent, TurnContext } from "./events.ts";
+import type { ChatMessageEvent, ContextEvent, SubagentBriefingEvent, ToolTranscriptEvent, TurnContext } from "./events.ts";
 
 /**
  * Project the durable log + the ephemeral turn context into provider-agnostic
@@ -41,7 +41,10 @@ export function renderPrompt(events: readonly ContextEvent[], turn: TurnContext)
         messages.push({ role: "assistant", content: toolTranscriptLine(event) });
         break;
       case "subagent-briefing":
-        // TODO: render once subagents exist (M6).
+        // Same compact-text, same-portability reasoning as tool-transcript
+        // above — a subagent's structured briefing is JSON either way.
+        flushChat();
+        messages.push({ role: "assistant", content: subagentBriefingLine(event) });
         break;
     }
   }
@@ -65,4 +68,8 @@ function chatLine(event: ChatMessageEvent): string {
 
 function toolTranscriptLine(event: ToolTranscriptEvent): string {
   return `[tool ${event.tool}] input=${JSON.stringify(event.input)} output=${JSON.stringify(event.output)}`;
+}
+
+function subagentBriefingLine(event: SubagentBriefingEvent): string {
+  return `[${event.agent} briefing] ${JSON.stringify(event.briefing)}`;
 }

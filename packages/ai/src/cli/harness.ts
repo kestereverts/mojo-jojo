@@ -2,19 +2,28 @@ import type { LanguageModel, ToolSet } from "ai";
 import type { PromptSection } from "../prompt/sections.ts";
 import type { ContextEvent, Speaker, TurnContext } from "../context/events.ts";
 import { InMemoryContextLog, type ContextLog } from "../context/log.ts";
-import { recordDurableTranscripts, runExchange, type ExchangeResult } from "../exchange.ts";
+import { recordDurableTranscripts, recordSubagentBriefings, runExchange, type ExchangeResult } from "../exchange.ts";
 import { toReplyLines } from "../reply.ts";
 import { buildToolSet, defaultToolDefinitions, type ToolRegistryResult } from "../tools/index.ts";
 import { buildDefaultInstructions } from "../prompt/instructions.ts";
 import { resolveSpeaker, type Friend } from "../identity/speakers.ts";
 import type { SpeakerFacts } from "../identity/middleware.ts";
+import type { ModelRoles } from "../models.ts";
 
-// Computed once, lazily, and reused — the same registry every default-config
-// harness call folds into instructions/tools/durable names.
-let cachedDefaultRegistry: ToolRegistryResult | undefined;
-function defaultRegistry(): ToolRegistryResult {
-  cachedDefaultRegistry ??= buildToolSet(defaultToolDefinitions());
-  return cachedDefaultRegistry;
+/**
+ * `research_topic` (M6) needs its own model role, unlike every other default
+ * tool — so the default registry can no longer be a single dependency-free
+ * module-level cache the way it was through M5. When the caller doesn't
+ * supply `HarnessConfig.models`, every role falls back to the main `model`'s
+ * spec string (or a hardcoded default if `model` is a raw `LanguageModel`
+ * instance, e.g. a test mock — that fallback only matters if the harness's
+ * OWN default registry is used AND `research_topic` is actually invoked
+ * during the run, an uncommon combination for tests, which normally pass an
+ * explicit `tools` override specifically to stay network-free).
+ */
+function defaultModelRoles(model: string | LanguageModel): ModelRoles {
+  const chat = typeof model === "string" ? model : "openai/gpt-5.4-mini";
+  return { chat, classifier: chat, summarizer: chat, research: chat, embedding: "openai/text-embedding-3-small" };
 }
 
 /**
@@ -51,6 +60,15 @@ export interface HarnessConfig {
   readonly toolGuidance?: readonly PromptSection[];
   /** Paired with `tools`; see its doc. Ignored (defaulted from the real registry) when `tools` is omitted. */
   readonly durableToolNames?: ReadonlySet<string>;
+  /** Paired with `tools`; see its doc. Ignored (defaulted from the real registry) when `tools` is omitted. */
+  readonly subagentToolNames?: ReadonlySet<string>;
+  /**
+   * Full model-role mapping, needed only when `tools` is omitted —
+   * `research_topic` (part of the default registry) resolves its own model
+   * via the `research` role, independent of `model` above. Defaults to every
+   * role using `model`'s spec string when omitted (see `defaultModelRoles`).
+   */
+  readonly models?: ModelRoles;
   readonly maxSteps?: number;
   /** Max delivered lines per reply (mirrors the module's `replyLines`). */
   readonly replyLines?: number;
@@ -115,11 +133,22 @@ export class DebugHarness {
   readonly log: ContextLog;
   readonly #config: HarnessConfig;
   readonly #now: () => Date;
+  // Per-instance, not module-level: research_topic's model role can differ
+  // per harness (config.models), so the registry can't be a single cache
+  // shared across every DebugHarness the way it could before M6.
+  #registry?: ToolRegistryResult;
 
   constructor(config: HarnessConfig) {
     this.#config = config;
     this.#now = config.now ?? (() => new Date());
     this.log = config.log ?? new InMemoryContextLog(config.historyLimit ?? DEFAULTS.historyLimit);
+  }
+
+  #defaultRegistry(): ToolRegistryResult {
+    this.#registry ??= buildToolSet(
+      defaultToolDefinitions({ models: this.#config.models ?? defaultModelRoles(this.#config.model) }),
+    );
+    return this.#registry;
   }
 
   /** Append a synthetic event to the log (stage history before a `chat`). */
@@ -162,14 +191,17 @@ export class DebugHarness {
       guidance: [`Reply in at most ${replyLines} short lines.`, ...(options.guidance ?? [])],
     };
 
-    // See the `tools` field doc: an explicit `toolGuidance`/`durableToolNames`
-    // pairs with an explicit `tools` override; otherwise both fall back to the
-    // real default registry ONLY when `tools` itself was also left at default.
+    // See the `tools` field doc: an explicit `toolGuidance`/`durableToolNames`/
+    // `subagentToolNames` pairs with an explicit `tools` override; otherwise
+    // all fall back to the real default registry ONLY when `tools` itself
+    // was also left at default.
     const usingDefaultTools = this.#config.tools === undefined;
-    const tools = this.#config.tools ?? defaultRegistry().tools;
-    const toolGuidance = this.#config.toolGuidance ?? (usingDefaultTools ? defaultRegistry().guidance : []);
+    const tools = this.#config.tools ?? this.#defaultRegistry().tools;
+    const toolGuidance = this.#config.toolGuidance ?? (usingDefaultTools ? this.#defaultRegistry().guidance : []);
     const durableToolNames =
-      this.#config.durableToolNames ?? (usingDefaultTools ? defaultRegistry().durableNames : new Set<string>());
+      this.#config.durableToolNames ?? (usingDefaultTools ? this.#defaultRegistry().durableNames : new Set<string>());
+    const subagentToolNames =
+      this.#config.subagentToolNames ?? (usingDefaultTools ? this.#defaultRegistry().subagentNames : new Set<string>());
 
     let result: ExchangeResult;
     try {
@@ -191,6 +223,7 @@ export class DebugHarness {
     }
 
     recordDurableTranscripts(this.log, result, durableToolNames, this.#now);
+    recordSubagentBriefings(this.log, result, subagentToolNames, this.#now);
 
     const lines = toReplyLines(result.text, replyLines);
     if (lines.length > 0) {

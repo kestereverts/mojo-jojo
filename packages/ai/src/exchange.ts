@@ -80,8 +80,8 @@ export interface ExchangeResult {
  * log — the caller appends the reply *as actually sent* (post-truncation), so
  * memory always matches what users saw.
  *
- * TODO(next): validators (reject-and-retry on ungrounded replies), subagents,
- * streaming via `agent.stream()`.
+ * TODO(next): validators (reject-and-retry on ungrounded replies), streaming
+ * via `agent.stream()`.
  */
 export async function runExchange(
   log: ContextLog,
@@ -186,6 +186,31 @@ export function recordDurableTranscripts(
         input: truncateForTranscript(call.input),
         output: truncateForTranscript(call.output),
       });
+    }
+  }
+}
+
+/**
+ * Append a {@link SubagentBriefingEvent} for every successful call to a
+ * subagent-backed tool (see `subagents/define.ts`'s `subagentAsTool`).
+ * Called once, identically, by both the live module and the debug harness
+ * right after `runExchange` resolves — the same single-call-site discipline
+ * as {@link recordDurableTranscripts}. A failed subagent call is never
+ * recorded, for the same reason: a briefing that doesn't exist shouldn't be
+ * remembered as if it did. Not truncated like tool transcripts — a
+ * briefing's schema (bounded findings/sources counts, a few-sentence
+ * summary) is already compact by construction.
+ */
+export function recordSubagentBriefings(
+  log: ContextLog,
+  result: ExchangeResult,
+  subagentNames: ReadonlySet<string>,
+  now: () => Date = () => new Date(),
+): void {
+  for (const step of result.steps) {
+    for (const call of step.toolCalls) {
+      if (call.error !== undefined || !subagentNames.has(call.toolName)) continue;
+      log.append({ kind: "subagent-briefing", at: now().toISOString(), agent: call.toolName, briefing: call.output });
     }
   }
 }

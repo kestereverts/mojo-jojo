@@ -11,7 +11,7 @@ import {
 } from "@mojo-jojo/bot";
 import type { PrivmsgEvent } from "@mojo-jojo/irc-client";
 import { InMemoryContextLog, type ContextLog } from "./context/log.ts";
-import { recordDurableTranscripts, runExchange } from "./exchange.ts";
+import { recordDurableTranscripts, recordSubagentBriefings, runExchange } from "./exchange.ts";
 import { toReplyLines } from "./reply.ts";
 import { buildToolSet, defaultToolDefinitions } from "./tools/index.ts";
 import type { ModelRoles } from "./models.ts";
@@ -121,7 +121,10 @@ export function mojoAiModule(): Module<MojoAiConfig> {
       ctx.onCleanup(() => aborter.abort());
 
       const friends = await loadFriends(ctx);
-      const { tools, guidance, durableNames } = buildToolSet(defaultToolDefinitions(), ctx.config.toolsDisabled);
+      const { tools, guidance, durableNames, subagentNames } = buildToolSet(
+        defaultToolDefinitions({ models: ctx.config.models, signal: aborter.signal }),
+        ctx.config.toolsDisabled,
+      );
       const instructions = buildDefaultInstructions(friends, guidance);
 
       const middlewareChain: ChatMiddleware[] = [
@@ -213,7 +216,9 @@ export function mojoAiModule(): Module<MojoAiConfig> {
                     ),
                   ).pipe(
                     map((result) => {
-                      recordDurableTranscripts(logFor(convoKey(msg.raw)), result, durableNames);
+                      const log = logFor(convoKey(msg.raw));
+                      recordDurableTranscripts(log, result, durableNames);
+                      recordSubagentBriefings(log, result, subagentNames);
                       return { msg, reply: result.text };
                     }),
                     catchError((error) => {

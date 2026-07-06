@@ -8,10 +8,14 @@ import type { PromptSection } from "../prompt/sections.ts";
  * remembering across turns.
  *
  * `durableTranscript` is the M4 "selective transcripts" decision made
- * concrete: ephemeral lookups (time/weather/currency/letter-count — true for
- * every tool in this batch) age out instantly and aren't persisted; a later
- * batch (paste URLs, research briefings) sets this `true` so those results
- * survive into durable memory as `ToolTranscriptEvent`s.
+ * concrete: ephemeral lookups (time/weather/currency/letter-count) age out
+ * instantly and aren't persisted; `paste`/`get_paste` (M5) set this `true` so
+ * those results survive into durable memory as `ToolTranscriptEvent`s.
+ *
+ * `isSubagent` marks a tool built via `subagents/define.ts`'s
+ * `subagentAsTool` — its successful calls are remembered via a DIFFERENT,
+ * dedicated mechanism (`SubagentBriefingEvent` + `recordSubagentBriefings` in
+ * `exchange.ts`), so it's always `durableTranscript: false` here.
  */
 export interface ToolDefinition {
   readonly name: string;
@@ -21,4 +25,5 @@ export interface ToolDefinition {
   readonly tool: Tool<any, any>;
   readonly guidance?: PromptSection;
   readonly durableTranscript: boolean;
+  readonly isSubagent?: boolean;
 }

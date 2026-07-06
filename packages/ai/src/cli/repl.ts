@@ -16,10 +16,11 @@ export interface ReplOptions extends ChatOptions {
   readonly modelRoles?: ModelRoleStatus[];
   /** Known people for identity resolution, loaded once at startup (see `identity/speakers.ts`). */
   readonly friends?: readonly Friend[];
-  /** The (config-`disabled`-filtered) tool registry — paired with `toolGuidance`/`durableToolNames`; see `DebugHarness`'s `tools` doc. */
+  /** The (config-`disabled`-filtered) tool registry — paired with `toolGuidance`/`durableToolNames`/`subagentToolNames`; see `DebugHarness`'s `tools` doc. */
   readonly tools?: ToolSet;
   readonly toolGuidance?: readonly PromptSection[];
   readonly durableToolNames?: ReadonlySet<string>;
+  readonly subagentToolNames?: ReadonlySet<string>;
 }
 
 const HELP = `Commands:
@@ -110,6 +111,7 @@ function newHarness(options: ReplOptions): DebugHarness {
     tools: options.tools,
     toolGuidance: options.toolGuidance,
     durableToolNames: options.durableToolNames,
+    subagentToolNames: options.subagentToolNames,
   });
 }
 

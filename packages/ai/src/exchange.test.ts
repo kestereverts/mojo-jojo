@@ -4,7 +4,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import { z } from "zod";
 import { InMemoryContextLog } from "./context/log.ts";
 import type { TurnContext } from "./context/events.ts";
-import { recordDurableTranscripts, runExchange } from "./exchange.ts";
+import { recordDurableTranscripts, recordSubagentBriefings, runExchange } from "./exchange.ts";
 
 const TURN: TurnContext = { nowUtc: "2026-01-01T00:00:00.000Z", conversation: "#t", guidance: [] };
 
@@ -204,5 +204,79 @@ describe("recordDurableTranscripts", () => {
 
     const transcript = log.events().find((e) => e.kind === "tool-transcript") as any;
     expect(transcript.output.note).toBe(shortNote);
+  });
+});
+
+describe("recordSubagentBriefings", () => {
+  const NOW = () => new Date("2026-02-02T00:00:00.000Z");
+
+  test("records a successful call to a subagent tool as a subagent-briefing event", async () => {
+    const research = tool({
+      description: "research",
+      inputSchema: z.object({ topic: z.string() }),
+      execute: async ({ topic }) => ({ summary: `about ${topic}`, confidence: "high" }),
+    });
+    const model = new MockLanguageModelV4({ doGenerate: [toolCallStep("research_topic", { topic: "bun" }), textStep("done")] });
+    const log = logWith("go");
+    const result = await runExchange(log, TURN, { model, instructions: "x", tools: { research_topic: research }, maxSteps: 4 });
+
+    recordSubagentBriefings(log, result, new Set(["research_topic"]), NOW);
+
+    const briefing = log.events().find((e) => e.kind === "subagent-briefing");
+    expect(briefing).toMatchObject({
+      kind: "subagent-briefing",
+      agent: "research_topic",
+      briefing: { summary: "about bun", confidence: "high" },
+      at: NOW().toISOString(),
+    });
+  });
+
+  test("does not record a call to a tool not in subagentNames", async () => {
+    const research = tool({
+      description: "research",
+      inputSchema: z.object({ topic: z.string() }),
+      execute: async ({ topic }) => ({ summary: topic }),
+    });
+    const model = new MockLanguageModelV4({ doGenerate: [toolCallStep("research_topic", { topic: "bun" }), textStep("done")] });
+    const log = logWith("go");
+    const result = await runExchange(log, TURN, { model, instructions: "x", tools: { research_topic: research }, maxSteps: 4 });
+
+    recordSubagentBriefings(log, result, new Set(["some_other_agent"]), NOW);
+
+    expect(log.events().some((e) => e.kind === "subagent-briefing")).toBe(false);
+  });
+
+  test("never records a failed subagent call, even if the tool is in subagentNames", async () => {
+    const research = tool({
+      description: "always throws",
+      inputSchema: z.object({ topic: z.string() }),
+      execute: async (): Promise<{ summary: string }> => {
+        throw new Error("subagent exceeded budget");
+      },
+    });
+    const model = new MockLanguageModelV4({ doGenerate: [toolCallStep("research_topic", { topic: "bun" }), textStep("recovered")] });
+    const log = logWith("go");
+    const result = await runExchange(log, TURN, { model, instructions: "x", tools: { research_topic: research }, maxSteps: 4 });
+
+    recordSubagentBriefings(log, result, new Set(["research_topic"]), NOW);
+
+    expect(log.events().some((e) => e.kind === "subagent-briefing")).toBe(false);
+  });
+
+  test("does not truncate the briefing — bounded by the output schema, not this function", async () => {
+    const longSummary = "z".repeat(2000);
+    const research = tool({
+      description: "research",
+      inputSchema: z.object({ topic: z.string() }),
+      execute: async () => ({ summary: longSummary }),
+    });
+    const model = new MockLanguageModelV4({ doGenerate: [toolCallStep("research_topic", { topic: "bun" }), textStep("done")] });
+    const log = logWith("go");
+    const result = await runExchange(log, TURN, { model, instructions: "x", tools: { research_topic: research }, maxSteps: 4 });
+
+    recordSubagentBriefings(log, result, new Set(["research_topic"]), NOW);
+
+    const briefing = log.events().find((e) => e.kind === "subagent-briefing") as any;
+    expect(briefing.briefing.summary).toBe(longSummary);
   });
 });
