@@ -175,4 +175,14 @@ describe("main — research command (network-dependent, real subagent)", () => {
     expect(r.code).toBe(2);
     expect(r.err).toContain("research needs a topic");
   });
+
+  test("--model reaches the standalone research command too, not just chat/repl (review finding — it was passing raw cliConfig.models, bypassing the cascade)", async () => {
+    // resolveModel throws on an unknown PROVIDER synchronously, before any
+    // network call — an unknown-provider spec is a network-free way to prove
+    // --model's value genuinely reached research_topic's model resolution.
+    const r = await run(["research", "test topic", "--model", "totally-bogus-provider/x"]);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("unknown model provider");
+    expect(r.err).toContain("totally-bogus-provider");
+  });
 });

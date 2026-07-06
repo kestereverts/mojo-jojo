@@ -199,7 +199,7 @@ export async function main(argv: string[]): Promise<number> {
         const briefing = await runSubagent(
           researchSubagent(),
           { topic, objective: values.objective },
-          { models: cliConfig.models },
+          { models }, // cascaded `models` (see cascadeModelOverride), not raw cliConfig.models — --model must reach this standalone command too
         );
         const wallMs = Math.round(performance.now() - startedAt);
         stdout.write(`${values.json ? JSON.stringify({ briefing, wallMs }, null, 2) : formatResearchHuman(briefing, wallMs)}\n`);
