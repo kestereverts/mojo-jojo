@@ -138,8 +138,16 @@ export function mojoAiModule(): Module<MojoAiConfig> {
     parseConfig(raw) {
       const v = new Validator();
       const models = parseModelRoles(v, raw);
+      // Default raised from 200 (M1, before compaction existed) to 400 —
+      // review finding: the hard hi trim on every append runs BEFORE
+      // maybeCompact ever sees the log, so a historyLimit at or below
+      // compaction.triggerEvents (240 by default) makes compaction silently
+      // inert — the log is always trimmed back down before it ever crosses
+      // the trigger threshold. 400 leaves comfortable room above the
+      // trigger default. See the cross-field check below for a MISconfigured
+      // combination (a custom historyLimit still at or below triggerEvents).
       const historyLimit =
-        v.optIntegerInRange(raw.historyLimit, "modules.mojo-ai.historyLimit", 1, 5000) ?? 200;
+        v.optIntegerInRange(raw.historyLimit, "modules.mojo-ai.historyLimit", 1, 5000) ?? 400;
       const maxSteps = v.optIntegerInRange(raw.maxSteps, "modules.mojo-ai.maxSteps", 1, 32) ?? 8;
       const replyLines = v.optIntegerInRange(raw.replyLines, "modules.mojo-ai.replyLines", 1, 10) ?? 3;
       const relays = parseRelays(v, raw.relays, "modules.mojo-ai.relays");
@@ -149,6 +157,12 @@ export function mojoAiModule(): Module<MojoAiConfig> {
       const guards = parseGuardConfig(v, raw);
       const dbPath = v.optNonEmptyString(raw.dbPath, "modules.mojo-ai.dbPath");
       const compaction = parseCompactionConfig(v, raw);
+      if (compaction.enabled && historyLimit <= compaction.triggerEvents) {
+        v.fail(
+          "modules.mojo-ai.historyLimit",
+          `must be greater than compaction.triggerEvents (${historyLimit} <= ${compaction.triggerEvents}) or the hard trim always runs first, making compaction dead code`,
+        );
+      }
       v.throwIfAny();
       return { models, historyLimit, maxSteps, replyLines, relays, friendsFile, toolsDisabled, guards, dbPath, compaction };
     },
@@ -235,28 +249,48 @@ export function mojoAiModule(): Module<MojoAiConfig> {
             // bot are seen at all — everything else never reaches log or model.
             // Checked on the (possibly relay-unwrapped) resolved text.
             filter((msg) => isAddressed(msg.text)),
-            tap((msg) =>
-              logFor(convoKey(msg.raw)).append({
-                kind: "chat-message",
-                at: msg.at,
-                speaker: resolveSpeaker(msg.speaker, friends),
-                text: msg.text,
-                addressed: true,
-              }),
-            ),
-            groupBy((msg) => convoKey(msg.raw)),
+            // The conversation key is computed exactly ONCE per message here
+            // and threaded through — `convoKey` reads the live casemapper,
+            // which can change across a reconnect; recomputing it at each of
+            // several call sites (as before) risked the exhaustMap `groupBy`
+            // key and the log/compact key desyncing if a reconnect landed
+            // mid-flight (M8 review finding — more consequential now that
+            // `compact()` physically mutates the log).
+            map((msg) => ({ msg, key: convoKey(msg.raw) })),
+            tap(({ msg, key }) => {
+              // A SqliteContextLog.append() can throw (SQLITE_BUSY, disk
+              // full, a locked db) where InMemoryContextLog never could —
+              // this `tap` sits OUTSIDE exhaustMap's per-exchange
+              // `catchError`, in the same outer pipe `groupBy` depends on,
+              // so an uncaught throw here would error the whole source
+              // observable and permanently stop the bot from processing any
+              // further message (M8 review finding). Degrade to "this one
+              // message isn't recorded" instead.
+              try {
+                logFor(key).append({
+                  kind: "chat-message",
+                  at: msg.at,
+                  speaker: resolveSpeaker(msg.speaker, friends),
+                  text: msg.text,
+                  addressed: true,
+                });
+              } catch (error) {
+                ctx.log.warn(`failed to append chat-message for ${key}`, error);
+              }
+            }),
+            groupBy(({ key }) => key),
             mergeMap((group) =>
               group.pipe(
                 // One exchange at a time per conversation; an addressed line
                 // arriving mid-exchange is recorded (above) but not replied to.
                 // TODO: queue or interrupt (switchMap + abort) instead of dropping.
-                exhaustMap((msg) =>
+                exhaustMap(({ msg, key }) =>
                   defer(() =>
                     runGuardedExchange(
-                      logFor(convoKey(msg.raw)),
+                      logFor(key),
                       {
                         nowUtc: new Date().toISOString(),
-                        conversation: convoKey(msg.raw),
+                        conversation: key,
                         guidance: [`Reply in at most ${ctx.config.replyLines} short lines.`],
                       },
                       {
@@ -283,21 +317,21 @@ export function mojoAiModule(): Module<MojoAiConfig> {
                     // out). Awaiting it here means the next `exhaustMap`
                     // emission genuinely waits for compaction to finish too.
                     mergeMap(async (outcome) => {
-                      const log = logFor(convoKey(msg.raw));
+                      const log = logFor(key);
                       if (outcome.result) {
                         recordDurableTranscripts(log, outcome.result, durableNames);
                         recordSubagentBriefings(log, outcome.result, subagentNames);
                       }
-                      logGuardWarnings(ctx, convoKey(msg.raw), outcome.explain);
+                      logGuardWarnings(ctx, key, outcome.explain);
                       deliver(ctx, log, msg.raw, outcome.reply);
                       const compacted = await maybeCompact(log, ctx.config.compaction, {
                         model: ctx.config.models.summarizer,
                         signal: aborter.signal,
                       });
-                      if (compacted) ctx.log.info(`compacted conversation ${convoKey(msg.raw)}`);
+                      if (compacted) ctx.log.info(`compacted conversation ${key}`);
                     }),
                     catchError((error) => {
-                      ctx.log.warn(`exchange failed in ${convoKey(msg.raw)}`, error);
+                      ctx.log.warn(`exchange failed in ${key}`, error);
                       return EMPTY;
                     }),
                   ),

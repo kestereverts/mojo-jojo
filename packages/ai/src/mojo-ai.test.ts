@@ -68,10 +68,15 @@ describe("mojoAiModule().parseConfig — model roles", () => {
 
 describe("mojoAiModule().parseConfig — other bounds unaffected by the models change", () => {
   test("still defaults and range-checks historyLimit/maxSteps/replyLines", () => {
-    expect(parse({})).toMatchObject({ historyLimit: 200, maxSteps: 8, replyLines: 3 });
+    // historyLimit's default (400) must stay above compaction.triggerEvents's
+    // default (240) — see the M8 cross-field check below — so this isn't
+    // just an arbitrary round number.
+    expect(parse({})).toMatchObject({ historyLimit: 400, maxSteps: 8, replyLines: 3 });
     expect(() => parse({ replyLines: 0 })).toThrow(ConfigError);
     expect(() => parse({ maxSteps: 33 })).toThrow(ConfigError);
-    const config = parse({ historyLimit: 50, maxSteps: 4, replyLines: 1 });
+    // A custom historyLimit below the default triggerEvents needs compaction
+    // disabled too, or it trips the new cross-field check (below).
+    const config = parse({ historyLimit: 50, maxSteps: 4, replyLines: 1, compaction: { enabled: false } });
     expect(config).toMatchObject({ historyLimit: 50, maxSteps: 4, replyLines: 1 });
   });
 });
@@ -145,5 +150,24 @@ describe("mojoAiModule().parseConfig — dbPath + [compaction] (M8)", () => {
 
   test("rejects a non-table `compaction` value", () => {
     expect(() => parse({ compaction: "not-a-table" })).toThrow(ConfigError);
+  });
+
+  test("rejects historyLimit at or below compaction.triggerEvents when compaction is enabled — the hard trim would always run first, making compaction dead code (review finding)", () => {
+    try {
+      parse({ historyLimit: 100, compaction: { triggerEvents: 100 } });
+      throw new Error("expected parseConfig to throw");
+    } catch (cause) {
+      expect(cause).toBeInstanceOf(ConfigError);
+      expect((cause as ConfigError).issues.join()).toContain("modules.mojo-ai.historyLimit");
+    }
+    expect(() => parse({ historyLimit: 50, compaction: { triggerEvents: 100 } })).toThrow(ConfigError);
+  });
+
+  test("a low historyLimit is fine when compaction is disabled — the cross-field check only applies while compaction is enabled", () => {
+    expect(() => parse({ historyLimit: 50, compaction: { enabled: false, triggerEvents: 100 } })).not.toThrow();
+  });
+
+  test("a historyLimit comfortably above triggerEvents is accepted", () => {
+    expect(() => parse({ historyLimit: 300, compaction: { triggerEvents: 100 } })).not.toThrow();
   });
 });

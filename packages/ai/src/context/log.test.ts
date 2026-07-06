@@ -41,6 +41,33 @@ describe("InMemoryContextLog — append + limit", () => {
     expect(() => new InMemoryContextLog(-1)).toThrow(RangeError);
     expect(() => new InMemoryContextLog(1.5)).toThrow(RangeError);
   });
+
+  test("the hard trim protects a leading compaction summary — it evicts raw tail events first, not the summary (review finding)", () => {
+    const log = new InMemoryContextLog(3);
+    log.append(chatEvent("1"));
+    log.append(replyEvent("2"));
+    log.compact(1, SUMMARY); // events: [SUMMARY]
+    log.append(chatEvent("3"));
+    log.append(chatEvent("4"));
+    log.append(chatEvent("5")); // over the limit of 3 (SUMMARY + 3 tail events = 4)
+
+    const events = log.events();
+    expect(events).toHaveLength(3);
+    expect(events[0]).toEqual(SUMMARY); // survives — not evicted
+    expect((events[1] as ChatMessageEvent).text).toBe("4"); // "3" was evicted, not the summary
+    expect((events[2] as ChatMessageEvent).text).toBe("5");
+  });
+
+  test("the protection holds across repeated appends past the limit — the summary is never evicted while any tail event remains", () => {
+    const log = new InMemoryContextLog(2);
+    log.append(chatEvent("1"));
+    log.append(replyEvent("2"));
+    log.compact(1, SUMMARY); // events: [SUMMARY]
+    log.append(chatEvent("3")); // [SUMMARY, "3"] — at the limit, no trim yet
+    log.append(chatEvent("4")); // over the limit — protects SUMMARY, evicts "3"
+    log.append(chatEvent("5")); // over the limit again — protects SUMMARY, evicts "4"
+    expect(log.events()).toEqual([SUMMARY, chatEvent("5")]);
+  });
 });
 
 describe("InMemoryContextLog — compact", () => {

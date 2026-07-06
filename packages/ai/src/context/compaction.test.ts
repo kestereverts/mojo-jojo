@@ -112,6 +112,25 @@ describe("maybeCompact — successful compaction", () => {
     expect(capturedPrompt).toContain("\\\"kind\\\":\\\"compaction\\\"");
     expect(log.events()[0]).toMatchObject({ kind: "compaction", summary: "merged summary" });
   });
+
+  test("a huge prefix is bounded before being sent to the model, not serialized without limit (review finding)", async () => {
+    const log = new InMemoryContextLog(10_000);
+    // A handful of events with a very long text field each — enough to blow
+    // past MAX_PROMPT_CHARS (200_000) when JSON.stringify'd in full.
+    for (let i = 0; i < 20; i++) log.append(chat("x".repeat(20_000), `2026-01-01T00:00:${String(i).padStart(2, "0")}.000Z`));
+
+    let capturedPromptLength = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async (opts) => {
+        capturedPromptLength = JSON.stringify(opts.prompt).length;
+        return { content: [{ type: "text", text: "summary" }], finishReason: { unified: "stop", raw: undefined }, usage: { inputTokens: { total: 1, noCache: 1, cacheRead: undefined, cacheWrite: undefined }, outputTokens: { total: 1, text: 1, reasoning: undefined } }, warnings: [] };
+      },
+    });
+    await maybeCompact(log, { enabled: true, triggerEvents: 5, keepTail: 3 }, { model }, FIXED);
+    // The full unbounded JSON would be roughly 20 * 20_000 = 400_000+ chars;
+    // the actual prompt sent must be well under that.
+    expect(capturedPromptLength).toBeLessThan(250_000);
+  });
 });
 
 describe("maybeCompact — fails open", () => {

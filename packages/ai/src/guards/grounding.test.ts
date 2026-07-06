@@ -87,6 +87,35 @@ describe("checkGrounding", () => {
     expect(result.ungroundedUrls).toEqual([]);
   });
 
+  test("a paste URL preserved in a COMPACTION summary is still grounded — compaction physically replaces the original tool-transcript (M8 review finding, Ophelia)", () => {
+    const priorEvents: ContextEvent[] = [
+      {
+        kind: "compaction",
+        at: "2026-01-01T00:00:00.000Z",
+        coversUntil: "2025-12-31T00:00:00.000Z",
+        summary: "Alice asked for a paste; the bot created https://mojo.v00l.com/:foldedIntoSummary and shared it.",
+        eventCount: 40,
+      },
+    ];
+    const result = checkGrounding("It was https://mojo.v00l.com/:foldedIntoSummary", [], priorEvents);
+    expect(result.grounded).toBe(true);
+    expect(result.ungroundedUrls).toEqual([]);
+  });
+
+  test("a URL NOT mentioned in the compaction summary is still ungrounded — compaction doesn't grant a blanket pass", () => {
+    const priorEvents: ContextEvent[] = [
+      {
+        kind: "compaction",
+        at: "2026-01-01T00:00:00.000Z",
+        coversUntil: "2025-12-31T00:00:00.000Z",
+        summary: "Alice and the bot discussed the weather. No links were mentioned.",
+        eventCount: 40,
+      },
+    ];
+    const result = checkGrounding("https://mojo.v00l.com/:neverMentioned", [], priorEvents);
+    expect(result.grounded).toBe(false);
+  });
+
   test("a durable transcript from a DIFFERENT tool is never treated as a known paste URL", () => {
     const priorEvents: ContextEvent[] = [
       { kind: "tool-transcript", at: "t", tool: "web_search", input: {}, output: { url: "https://mojo.v00l.com/:notAPaste" } },

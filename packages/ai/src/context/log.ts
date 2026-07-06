@@ -32,7 +32,15 @@ export class InMemoryContextLog implements ContextLog {
   append(event: ContextEvent): void {
     this.#events.push(event);
     if (this.#events.length > this.#limit) {
-      this.#events.splice(0, this.#events.length - this.#limit);
+      const excess = this.#events.length - this.#limit;
+      // Protect a leading compaction summary from eviction — it represents
+      // everything already folded in; evicting IT (always index 0, see
+      // `compact()`) before raw tail events would destroy compressed
+      // history before uncompressed history, backwards from what a hard
+      // backstop should protect first (review finding). Trim starts one
+      // index later when a summary is present.
+      const spliceStart = this.#events[0]?.kind === "compaction" ? 1 : 0;
+      this.#events.splice(spliceStart, excess);
     }
   }
 

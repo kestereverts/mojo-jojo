@@ -26,8 +26,29 @@ Preserve:
 - Decisions made or conclusions reached
 - Running jokes, callbacks, or in-jokes that might resurface later
 - Any unresolved question or thread left hanging
+- Any URL mentioned (write it out in full, verbatim) — especially a paste/portal link the bot created, since once this summary replaces the original event a later reply re-citing that link can only be verified against exactly what you write here
 
 Write it as plain context for whoever continues this conversation next — state the facts/context directly. Do not write meta-commentary like "the conversation covered..." or "in summary...". No markdown, no bullet points — a few dense sentences.`;
+
+/**
+ * Bounds the serialized prefix sent to the summarizer. `triggerEvents` can be
+ * configured up to 100,000 and durable events can each carry a truncated-but
+ * -still-sizeable payload (tool transcripts, subagent briefings) — without a
+ * cap, one compaction call could serialize into a multi-MB prompt, blowing
+ * past a reasonable context window or cost budget (review finding). A
+ * mid-array truncation (keeping the START and END, dropping the middle) is
+ * used rather than a hard cutoff, so the newest events approaching
+ * `keepTail` — and the oldest, often-most-foundational ones — aren't the
+ * part silently dropped.
+ */
+const MAX_PROMPT_CHARS = 200_000;
+
+function boundedPrompt(events: unknown[]): string {
+  const full = JSON.stringify(events);
+  if (full.length <= MAX_PROMPT_CHARS) return full;
+  const half = Math.floor(MAX_PROMPT_CHARS / 2);
+  return `${full.slice(0, half)}\n...[middle truncated — too large to summarize in full]...\n${full.slice(-half)}`;
+}
 
 /**
  * Runs the compactor for one conversation's log — unlike `runExchange`/
@@ -46,6 +67,15 @@ Write it as plain context for whoever continues this conversation next — state
  * — nothing is compacted, the log is untouched, and `historyLimit`'s hard
  * per-append trim remains the backstop against unbounded growth regardless
  * of whether compaction ever successfully runs.
+ *
+ * **Accepted limitation, not fixed here**: merging is pure LLM judgment, with
+ * no deterministic retention check. Across MANY compaction rounds over a
+ * long-lived conversation, summary-of-a-summary drift is possible — an early
+ * fact could progressively degrade or be dropped over enough rounds, and
+ * nothing here detects or bounds that. This mechanism solves unbounded
+ * *growth*; it does not guarantee unbounded-round *fidelity*. `eventCount` is
+ * per-round, not cumulative, so it isn't an audit signal for "how much this
+ * summary now stands in for" either.
  *
  * Returns whether a compaction actually happened, for the caller to log/inspect.
  */
@@ -70,7 +100,7 @@ export async function maybeCompact(
     const { text } = await generateText({
       model,
       system: COMPACTION_INSTRUCTIONS,
-      prompt: JSON.stringify(toSummarize),
+      prompt: boundedPrompt(toSummarize),
       abortSignal: deps.signal,
     });
     const summary = text.trim();

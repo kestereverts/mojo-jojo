@@ -75,9 +75,21 @@ function knownPasteUrlsFromSteps(steps: readonly ExchangeStep[]): Set<string> {
 function knownPasteUrlsFromHistory(priorEvents: readonly ContextEvent[]): Set<string> {
   const urls = new Set<string>();
   for (const event of priorEvents) {
-    if (event.kind !== "tool-transcript" || event.tool !== "paste") continue;
-    const output = event.output as { url?: unknown } | undefined;
-    if (typeof output?.url === "string") urls.add(output.url);
+    if (event.kind === "tool-transcript" && event.tool === "paste") {
+      const output = event.output as { url?: unknown } | undefined;
+      if (typeof output?.url === "string") urls.add(output.url);
+    } else if (event.kind === "compaction") {
+      // M8 review finding: compaction PHYSICALLY REPLACES old tool-transcript
+      // events with prose — a paste older than `keepTail` no longer exists
+      // as a structured transcript at all, so without this branch a
+      // legitimate re-citation of it ("what was that gist again?") would be
+      // flagged ungrounded and stripped purely because compaction ran.
+      // COMPACTION_INSTRUCTIONS explicitly asks the summarizer to preserve
+      // URLs verbatim in `summary`, so extracting them the same way a reply
+      // is scanned recovers this case — best-effort (depends on the
+      // summarizer actually having preserved it), not a guarantee.
+      for (const url of extractUrls(event.summary)) urls.add(url);
+    }
   }
   return urls;
 }

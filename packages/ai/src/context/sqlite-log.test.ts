@@ -71,6 +71,23 @@ describe("SqliteContextLog — append/events round-trip", () => {
     expect((events[1] as ChatMessageEvent).text).toBe("3");
   });
 
+  test("the hard limit protects a leading compaction summary — it evicts raw tail rows first, not the summary (review finding)", () => {
+    const db = openContextDb(":memory:");
+    const log = new SqliteContextLog(db, "#test", 3);
+    log.append(chat("1"));
+    log.append(reply("2"));
+    log.compact(1, SUMMARY);
+    log.append(chat("3"));
+    log.append(chat("4"));
+    log.append(chat("5"));
+
+    const events = log.events();
+    expect(events).toHaveLength(3);
+    expect(events[0]).toEqual(SUMMARY);
+    expect((events[1] as ChatMessageEvent).text).toBe("4");
+    expect((events[2] as ChatMessageEvent).text).toBe("5");
+  });
+
   test("rejects a non-positive-integer limit", () => {
     const db = openContextDb(":memory:");
     expect(() => new SqliteContextLog(db, "#test", 0)).toThrow(RangeError);
